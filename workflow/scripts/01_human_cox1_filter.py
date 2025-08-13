@@ -56,8 +56,8 @@ def log_message(message: str, log_file=None, stdout=False):
     if stdout:
         print(formatted_msg, flush=True)
 
-def vectorized_sequence_similarity(seq_no_gaps: str, reference_array: np.ndarray, min_overlap: int = 20) -> float:
-    """Calculate sequence similarity using vectorized operations"""
+def vectorised_sequence_similarity(seq_no_gaps: str, reference_array: np.ndarray, min_overlap: int = 20) -> float:
+    """Calculate sequence similarity using vectorised operations"""
     if not seq_no_gaps or len(seq_no_gaps) == 0:
         return 0.0
     
@@ -140,7 +140,7 @@ def process_single_file(file_path: str, human_threshold: float, output_dir: str)
                 continue
             
             # Calculate human similarity
-            similarity = vectorized_sequence_similarity(sequence_no_gaps, HUMAN_COX1_ARRAY)
+            similarity = vectorised_sequence_similarity(sequence_no_gaps, HUMAN_COX1_ARRAY)
             
             if similarity >= human_threshold:
                 removed_sequences.append({

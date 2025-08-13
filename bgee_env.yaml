@@ -13,6 +13,8 @@ dependencies:
   - gene-fetch=1.0.15
   - trim-galore=0.6.10
   - fastp=0.23.4
+  - samtools=1.22
+  - bwa=0.7.19
   - pigz=2.8
   - pandas=2.2.2
   - bbmap=39.01

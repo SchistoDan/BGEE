@@ -2,7 +2,7 @@
 """
 AT Content FASTA Sequence Filter
 
-A specialised tool for filtering FASTA sequence alignments based on AT content analysis.
+A tool for filtering FASTA sequence alignments based on AT content.
 Extracts sequences that have AT content within specified thresholds compared to consensus.
 
 Features:
@@ -180,7 +180,7 @@ def memory_cleanup():
         pass
 
 def sequences_to_numpy_array(sequences: List[str]) -> np.ndarray:
-    """Convert sequences to numpy array for vectorized operations."""
+    """Convert sequences to numpy array for vectorised operations."""
     if not sequences:
         return np.array([])
     
@@ -327,8 +327,8 @@ def calculate_at_content(sequence: str) -> float:
     at_count = sequence_clean.count('A') + sequence_clean.count('T')
     return at_count / len(sequence_clean)
 
-def vectorized_at_content(sequences_array: np.ndarray) -> np.ndarray:
-    """Calculate AT content using vectorized operations."""
+def vectorised_at_content(sequences_array: np.ndarray) -> np.ndarray:
+    """Calculate AT content using vectorised operations."""
     if sequences_array.size == 0:
         return np.array([])
     
@@ -348,8 +348,8 @@ def vectorized_at_content(sequences_array: np.ndarray) -> np.ndarray:
     
     return at_content
 
-def vectorized_compare_at_content(consensus_array: np.ndarray, sequences_array: np.ndarray) -> Tuple[np.ndarray, float, np.ndarray]:
-    """Compare AT content using vectorized operations."""
+def vectorised_compare_at_content(consensus_array: np.ndarray, sequences_array: np.ndarray) -> Tuple[np.ndarray, float, np.ndarray]:
+    """Compare AT content using vectorised operations."""
     if sequences_array.size == 0 or consensus_array.size == 0:
         return np.array([]), 0.0, np.array([])
     
@@ -382,7 +382,7 @@ def vectorized_compare_at_content(consensus_array: np.ndarray, sequences_array: 
     return query_at, consensus_at, at_differences
 
 def calculate_position_frequencies(sequences: List[str]) -> List[Dict[str, float]]:
-    """Calculate residue frequencies at each position using vectorized operations."""
+    """Calculate residue frequencies at each position using vectorised operations."""
     if not sequences:
         raise ValueError("No sequences provided")
     
@@ -407,7 +407,7 @@ def calculate_position_frequencies(sequences: List[str]) -> List[Dict[str, float
 
 def generate_consensus_sequence(alignment: MultipleSeqAlignment, 
                               threshold: float = 0.5) -> Tuple[str, List[Dict[str, float]]]:
-    """Generate consensus sequence using optimized operations."""
+    """Generate consensus sequence using optimised operations."""
     if not alignment:
         raise ValueError("Empty alignment provided")
     
@@ -457,7 +457,7 @@ def filter_at_content(records: List[SeqRecord],
         chunk_end = min(chunk_start + chunk_size, len(records))
         chunk_records = records[chunk_start:chunk_end]
         
-        # Process this chunk with vectorized operations
+        # Process this chunk with vectorised operations
         sequences = [str(record.seq).upper() for record in chunk_records]
         max_len = len(consensus_seq)
         padded_sequences = [seq.ljust(max_len, '-')[:max_len] for seq in sequences]
@@ -465,7 +465,7 @@ def filter_at_content(records: List[SeqRecord],
         consensus_array = np.array(list(consensus_seq.upper()))
         
         # Calculate AT content differences
-        query_at, cons_at, at_differences = vectorized_compare_at_content(
+        query_at, cons_at, at_differences = vectorised_compare_at_content(
             consensus_array, sequences_array
         )
         
@@ -691,7 +691,7 @@ def process_fasta_file(input_file: str,
         'log': os.path.join(output_subdirs['logs'], f"{base_name}_log.txt")
     }
     
-    # Initialize statistics
+    # Initialise statistics
     stats = {
         'status': 'success',
         'input_sequences': 0,

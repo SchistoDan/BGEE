@@ -26,9 +26,9 @@ def log_message(message: str, log_file=None, stdout=False):
     if stdout:
         print(formatted_msg, flush=True)
 
-def normalize_base_name(name: str) -> tuple:
-    """Normalize base names by removing common suffixes to get core base name
-    Returns: (normalized_name, removed_suffix)"""
+def normalise_base_name(name: str) -> tuple:
+    """Normalise base names by removing common suffixes to get core base name
+    Returns: (normalised_name, removed_suffix)"""
     # Remove suffixes in order of priority (longest first to avoid partial matches)
     suffixes_to_remove = [
         '_fcleaner_merge',
@@ -39,16 +39,16 @@ def normalize_base_name(name: str) -> tuple:
         '_reference_filtered'
     ]
     
-    normalized = name.strip()
+    normalised = name.strip()
     removed_suffix = ''
     
     for suffix in suffixes_to_remove:
-        if normalized.endswith(suffix):
-            normalized = normalized[:-len(suffix)]
+        if normalised.endswith(suffix):
+            normalised = normalised[:-len(suffix)]
             removed_suffix = suffix
             break  # Only remove one suffix to avoid over-trimming
     
-    return normalized, removed_suffix
+    return normalised, removed_suffix
 
 def parse_human_metrics(csv_file: str) -> Dict[str, Dict]:
     """Parse human COX1 filter metrics CSV"""
@@ -60,8 +60,8 @@ def parse_human_metrics(csv_file: str) -> Dict[str, Dict]:
                 if row.get('sequence_id') == 'FILE_SUMMARY':
                     base_name = row.get('base_name', '')
                     if base_name:
-                        normalized_name, removed_suffix = normalize_base_name(base_name)
-                        metrics[normalized_name] = {
+                        normalised_name, removed_suffix = normalise_base_name(base_name)
+                        metrics[normalised_name] = {
                             'input_reads': int(row.get('input_count', 0) or 0),
                             'removed_human': int(row.get('removed_count', 0) or 0),
                             'original_name': base_name,
@@ -80,8 +80,8 @@ def parse_at_metrics(csv_file: str) -> Dict[str, Dict]:
             for row in reader:
                 sample_name = row.get('sample_name', '')
                 if sample_name:
-                    normalized_name, removed_suffix = normalize_base_name(sample_name)
-                    metrics[normalized_name] = {
+                    normalised_name, removed_suffix = normalise_base_name(sample_name)
+                    metrics[normalised_name] = {
                         'removed_at_distance': int(row.get('removed_sequences', 0) or 0),
                         'original_name': sample_name,
                         'removed_suffix': removed_suffix
@@ -99,8 +99,8 @@ def parse_outlier_metrics(csv_file: str) -> Dict[str, Dict]:
             for row in reader:
                 base_name = row.get('base_name', '')
                 if base_name:
-                    normalized_name, removed_suffix = normalize_base_name(base_name)
-                    metrics[normalized_name] = {
+                    normalised_name, removed_suffix = normalise_base_name(base_name)
+                    metrics[normalised_name] = {
                         'removed_outliers': int(row.get('removed_count', 0) or 0),
                         'original_name': base_name,
                         'removed_suffix': removed_suffix
@@ -116,43 +116,28 @@ def parse_reference_metrics(csv_file: str) -> Dict[str, Dict]:
         with open(csv_file, 'r') as f:
             reader = csv.DictReader(f)
             
-            # Group by base_name and sum removals
-            base_name_counts = defaultdict(int)
-            base_name_info = {}
-            
             for row in reader:
+                # Only process FILE_SUMMARY records
                 if row.get('sequence_id') == 'FILE_SUMMARY':
-                    # File summary record
-                    base_name = row.get('base_name', '')
-                    if base_name:
-                        normalized_name, removed_suffix = normalize_base_name(base_name)
-                        metrics[normalized_name] = {
+                    # Extract sample identifier from file_path instead of using base_name
+                    file_path = row.get('file_path', '')
+                    if file_path:
+                        # Extract filename from path
+                        filename = os.path.basename(file_path)
+                        
+                        # Remove the _outlier_filtered.fasta suffix to get the sample identifier
+                        if filename.endswith('_outlier_filtered.fasta'):
+                            sample_identifier = filename[:-len('_outlier_filtered.fasta')]
+                        else:
+                            # Fallback: just remove .fasta extension
+                            sample_identifier = filename.replace('.fasta', '')
+                        
+                        # Use the full sample_identifier as the key
+                        metrics[sample_identifier] = {
                             'removed_reference': int(row.get('removed_count', 0) or 0),
-                            'original_name': base_name,
-                            'removed_suffix': removed_suffix
+                            'original_name': sample_identifier,
+                            'removed_suffix': ''
                         }
-                else:
-                    # Individual sequence record - extract base name and count removals
-                    if row.get('removal_reason'):  # If sequence was removed
-                        base_name = row.get('base_name', '')
-                        if base_name:
-                            normalized_name, removed_suffix = normalize_base_name(base_name)
-                            base_name_counts[normalized_name] += 1
-                            if normalized_name not in base_name_info:
-                                base_name_info[normalized_name] = {
-                                    'original_name': base_name,
-                                    'removed_suffix': removed_suffix
-                                }
-            
-            # If no FILE_SUMMARY records, use the counted values
-            if not metrics and base_name_counts:
-                for normalized_name, count in base_name_counts.items():
-                    info = base_name_info.get(normalized_name, {})
-                    metrics[normalized_name] = {
-                        'removed_reference': count,
-                        'original_name': info.get('original_name', normalized_name),
-                        'removed_suffix': info.get('removed_suffix', '')
-                    }
                         
     except Exception as e:
         print(f"Warning: Could not read reference metrics {csv_file}: {str(e)}")
@@ -168,9 +153,9 @@ def parse_consensus_metrics(csv_file: str) -> Dict[str, Dict]:
                 sample_name = row.get('sample_name', '')
                 if sample_name:
                     # Keep the full sample_name with _fcleaner suffix for output
-                    # But also create normalized version for matching
-                    normalized_name, removed_suffix = normalize_base_name(sample_name)
-                    metrics[normalized_name] = {
+                    # But also create normalised version for matching
+                    normalised_name, removed_suffix = normalise_base_name(sample_name)
+                    metrics[normalised_name] = {
                         'sample_name': sample_name,  # Keep original with _fcleaner suffix
                         'cleaned_reads': int(row.get('cleaned_reads', 0) or 0),
                         'final_ambig_bases': int(row.get('ambiguous_bases', 0) or 0),
@@ -190,7 +175,7 @@ def aggregate_metrics(human_metrics: Dict, at_metrics: Dict, outlier_metrics: Di
                      reference_metrics: Dict, consensus_metrics: Dict) -> Dict[str, Dict]:
     """Aggregate metrics from all filtering steps"""
     
-    # Get all unique normalized base names
+    # Get all unique normalised base names
     all_base_names = set()
     all_base_names.update(human_metrics.keys())
     all_base_names.update(at_metrics.keys())
@@ -200,13 +185,13 @@ def aggregate_metrics(human_metrics: Dict, at_metrics: Dict, outlier_metrics: Di
     
     combined_metrics = {}
     
-    for normalized_name in all_base_names:
+    for normalised_name in all_base_names:
         # Get data from each step (use 0 for missing data)
-        human_data = human_metrics.get(normalized_name, {})
-        at_data = at_metrics.get(normalized_name, {})
-        outlier_data = outlier_metrics.get(normalized_name, {})
-        reference_data = reference_metrics.get(normalized_name, {})
-        consensus_data = consensus_metrics.get(normalized_name, {})
+        human_data = human_metrics.get(normalised_name, {})
+        at_data = at_metrics.get(normalised_name, {})
+        outlier_data = outlier_metrics.get(normalised_name, {})
+        reference_data = reference_metrics.get(normalised_name, {})
+        consensus_data = consensus_metrics.get(normalised_name, {})
         
         # Determine the appropriate sample_name for output
         # Priority: 1) Use consensus sample_name if available, 2) Reconstruct with appropriate suffix
@@ -224,9 +209,9 @@ def aggregate_metrics(human_metrics: Dict, at_metrics: Dict, outlier_metrics: Di
             if not fcleaner_suffix:
                 fcleaner_suffix = '_fcleaner'
                 
-            sample_name = f"{normalized_name}{fcleaner_suffix}"
+            sample_name = f"{normalised_name}{fcleaner_suffix}"
         
-        combined_metrics[normalized_name] = {
+        combined_metrics[normalised_name] = {
             'sample_name': sample_name,
             'input_reads': human_data.get('input_reads', 0),
             'removed_human': human_data.get('removed_human', 0),
@@ -323,7 +308,7 @@ def main():
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         
-        for normalized_name, metrics in combined_metrics.items():
+        for normalised_name, metrics in combined_metrics.items():
             # Ensure all fields are present
             row = {field: metrics.get(field, 0) for field in fieldnames}
             writer.writerow(row)

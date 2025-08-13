@@ -15,11 +15,11 @@ output_dir: "path/to/BGEE-RUN_1-out"
 ## Gene Fetch parameters (https://github.com/bge-barcoding/gene_fetch)
 run_gene_fetch: true  # Set true to use gene-fetch to generate reference sequences
 gene_fetch:
-  email: "example@example.ac.uk"      # Required: Email for NCBI API
-  api_key: "api_key1234567890"        # Required: NCBI API key
-  gene: "cox1"                        # Target gene (e.g., cox1, rbcl, matk)
-  input_type: "taxid"                                     # Does the 'samples.csv' contain a 'taxid' column or 'hierarchical' taxonomic information column per sample (default: taxid)? - see Gene Fetch docs for more detail
-  genbank: true                       # Download GenBank records for corresponding pseudo-references
+   email: "example@example.ac.uk"                          # Required: Email for NCBI API
+   api_key: "0123456789"                                   # Required: NCBI API key
+   gene: "cox1"                                            # Target gene (e.g., cox1, rbcl, matk)
+   input_type: "taxid"                                     # Does the 'samples.csv' contain a 'taxid' column or 'hierarchical' taxonomic information column per sample (default: taxid)? - see Gene Fetch docs for more detail
+   genbank: true                                           # Download GenBank records for corresponding pseudo-references
   # output_dir will be set automatically to {output_dir}/references/
 
 ## MGE running parameters (see https://github.com/cmayer/MitoGeneExtractor/tree/main?tab=readme-ov-file#command-line-options)
@@ -46,13 +46,15 @@ fasta_cleaner:
   consensus_threshold: 0.5      # Threshold at which bases at each position must 'agree' to be incldued in the consensus (0.5 = ≥50% of bases at each position must agree)
   human_threshold: 0.95         # Threshold at which reads are removed due to similarity with human COI (0.95 = reads with ≥95% similarity are removed)
   at_difference: 0.1            # Threshold at which reads are removed due to AT content variation (0.1 = reads with AT% differing by >10% from the consensus are removed)
-  at_mode: "absolute"           # At content filtering mode: Absolute (reads removed when AT% differs from consensus in either direction by `at_difference` (e.g. >10%)), Higher (reads removed when AT% is higher than `at_difference` threshold), Lower (reads removed when AT% is lower than `at_difference` threshold).
+  at_mode: "absolute"           # At content filtering mode: Absolute, Higher, Lower
   outlier_percentile: 90.0      # Threshold at which reads are flagged as statistical outliers to the consensus and removed (90.0 = reads <90% 'similar' to the consensus are removed)
   disable_human: false          # If false, 'human_cox1_filter.py' will run
   disable_at: false             # If false, 'at_content_filter.py' will run
   disable_outliers: false       # If false, 'statistical_outliers.py' will run
   reference_dir: null           # To skip reference filtering enter "null"/"None". To enable reference filtering, provide path to a parent directory (flat structure) containing '{sample}_reference.fasta' files.
-
+  reference_filter_mode: "remove_similar"    # Filter mode: "keep_similar" (remove outliers) or "remove_similar" (remove sequences similar to reference)
+  
+  
 ## Comparison and selection of the 'best' consensus sequence produced by MGE and fasta_cleaner for each sample (using fasta_compare.py)
 run_fasta_compare: true  # Set false to skip fasta_compare step
 fasta_compare:
@@ -84,7 +86,7 @@ rules:
     threads: 4
   gzip_trimmed:
     mem_mb: 4096
-    threads: 4 
+    threads: 2 
   aggregate_concat_logs:
     mem_mb: 2048
     threads: 2
@@ -95,19 +97,19 @@ rules:
     mem_mb: 2048
     threads: 2
   MitoGeneExtractor_merge:
-    mem_mb: 20480
-    threads: 6
-    partition: medium        # Change according to your available partitions
+    mem_mb: 20480           # Rule has dynamic memory scaling upon retry (mem_mb * retry #)
+    threads: 4
+    partition: medium
   MitoGeneExtractor_concat:
-    mem_mb: 20480
-    threads: 6
-    partition: medium        # Change according to your available partitions
+    mem_mb: 20480           # Rule has dynamic memory scaling upon retry (mem_mb * retry #)
+    threads: 4
+    partition: medium
   rename_and_combine_cons_merge:
     mem_mb: 2048
-    threads: 4
+    threads: 2
   rename_and_combine_cons_concat:
     mem_mb: 2048
-    threads: 4
+    threads: 2
   create_alignment_log_merge:
     mem_mb: 4096
     threads: 2
@@ -116,7 +118,7 @@ rules:
     threads: 2
   human_cox1_filter_merge:
     mem_mb: 10240
-    threads: 8
+    threads: 4
   at_content_filter_merge:
     mem_mb: 15360
     threads: 8
@@ -125,16 +127,16 @@ rules:
     threads: 8
   reference_filter_merge:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   consensus_generation_merge:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   aggregate_filter_metrics_merge:
     mem_mb: 2048
     threads: 1
   human_cox1_filter_concat:
     mem_mb: 10240
-    threads: 8
+    threads: 4
   at_content_filter_concat:
     mem_mb: 15360
     threads: 8
@@ -143,10 +145,10 @@ rules:
     threads: 1
   reference_filter_concat:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   consensus_generation_concat:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   aggregate_filter_metrics_concat:
     mem_mb: 2048
     threads: 1

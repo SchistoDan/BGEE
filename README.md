@@ -45,7 +45,7 @@ Snakemake workflow for recovering high-quality barcode sequences from genome ski
    - Generation of 'cleaned' consensus sequence (uses supplementary [consensus_generator.py](https://github.com/bge-barcoding/MitoGeneExtractor-BGE/blob/main/workflow/scripts/consensus_generator.py).
    - Aggregate metrics from each stage of filtering (uses supplementary [aggregate_filter_metrics.py](https://github.com/bge-barcoding/MitoGeneExtractor-BGE/blob/main/workflow/scripts/aggregate_filter_metrics.py).
    - Remove intermediate files and unecessary logs generated during the consensus cleaning process (remove_fasta_cleaner_files).
-8. Evaluate barcode consensus sequence quality based on various metrics (length, ambiguous base content, etc.), and select the 'best' sequences according to specific ranking criteria: Rank1 = No ambiguous bases & longest stretch ≥ 650, Rank3 = No ambiguous bases & longest stretch ≥ 500, Rank3 = No ambiguous bases & 300 ≤ longest stretch ≤ 499, Rank4 = No ambiguous bases &1 ≤ longest stretch ≤ 299, Rank5 = Has ambiguous bases. 'Relaxed' ranking criteria also available (see docstring of supplementary [fasta_compare](https://github.com/bge-barcoding/MitoGeneExtractor-BGE/blob/main/workflow/scripts/fasta_compare.py).
+8. Evaluate barcode consensus sequence quality based on various metrics (length, ambiguous base content, etc.), and select the 'best' sequences according to specific ranking criteria (either 'normal' or 'relaxed'). (see docstring of supplementary [fasta_compare](https://github.com/bge-barcoding/MitoGeneExtractor-BGE/blob/main/workflow/scripts/fasta_compare.py).
 9. Compile statistics from read QC, MGE, and consensus cleaning metrics into a CSV report for both 'concat' and 'merge' modes (uses supplementary [mge_stats.py](https://github.com/bge-barcoding/MitoGeneExtractor-BGE/blob/main/workflow/scripts/mge_stats.py) and combine_stats_files).
 10. Remove temporary files, sample-specific logs once aggregated, etc. (cleanup_files).
 
@@ -184,7 +184,7 @@ rules:
     threads: 4
   gzip_trimmed:
     mem_mb: 4096
-    threads: 4 
+    threads: 2 
   aggregate_concat_logs:
     mem_mb: 2048
     threads: 2
@@ -196,18 +196,18 @@ rules:
     threads: 2
   MitoGeneExtractor_merge:
     mem_mb: 20480
-    threads: 6
+    threads: 4
     partition: medium        # Change according to your available partitions
   MitoGeneExtractor_concat:
     mem_mb: 20480
-    threads: 6
+    threads: 4
     partition: medium        # Change according to your available partitions
   rename_and_combine_cons_merge:
     mem_mb: 2048
-    threads: 4
+    threads: 2
   rename_and_combine_cons_concat:
     mem_mb: 2048
-    threads: 4
+    threads: 2
   create_alignment_log_merge:
     mem_mb: 4096
     threads: 2
@@ -216,37 +216,37 @@ rules:
     threads: 2
   human_cox1_filter_merge:
     mem_mb: 10240
-    threads: 8
+    threads: 4
   at_content_filter_merge:
     mem_mb: 15360
     threads: 8
   statistical_outlier_filter_merge:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   reference_filter_merge:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   consensus_generation_merge:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   aggregate_filter_metrics_merge:
     mem_mb: 2048
     threads: 1
   human_cox1_filter_concat:
     mem_mb: 10240
-    threads: 8
+    threads: 4
   at_content_filter_concat:
     mem_mb: 15360
     threads: 8
   statistical_outlier_filter_concat:
     mem_mb: 4096
-    threads: 1
+    threads: 4
   reference_filter_concat:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   consensus_generation_concat:
     mem_mb: 8192
-    threads: 8
+    threads: 4
   aggregate_filter_metrics_concat:
     mem_mb: 2048
     threads: 1
@@ -278,11 +278,15 @@ rules:
 - The profile (`profiles/local` or `profiles/slurm`) will need to be changed depending on your system (see `$PROFILE` variable in `snakemake_run.sh`).
 
 # Cluster submission #
-- [snakemake_run.sh](https://github.com/bge-barcoding/MitoGeneExtractor-BGE/blob/main/snakemake_run.sh) handles submission of the snakemake workflow to the HPC cluster.
-- The working directory will initially be unlocked (using `--unlock`) and then the snakemake workflow will be run.
-- Submit snakemake_run.sh to the cluster with `./snakemake_run.sh` (if in `BGEE/` directory) - This will submit `snakemake_run.sh` to the head/login node of your cluster:
-  - If using `profiles/slurm`, SLURM will orchestrate submission of each step in the workflow as a separate job.
-  - If using `profiles/local`, all workflow steps will be run as a single job. 
+- [snakemake_run.sh](https://github.com/bge-barcoding/MitoGeneExtractor-BGE/blob/main/snakemake_run.sh) handles submission of the snakemake workflow to the HPC cluster. The working directory will initially be unlocked (using `--unlock`) and then the snakemake workflow will be run.  
+
+If using `profiles/slurm`, SLURM will orchestrate submission of each step in the workflow as a separate job.
+1. Set up interactive session on compute node using `srun --job-name=snakeflow --partition=[YOUR_PARTITION] --cpus-per-task=2 --mem=4G --time=24:00:00 --pty bash`. Change `[YOUR_PARTITION]` to a suitable partition for your HPC. Remember choose a partition and request enough walltime (with `--time`) for the scheduler to last until all jobs finish, otherwise it will be killed when interactive session ends.
+2. Submit snakemake_run.sh to the compute node running the interactive session you just set up with `bash snakemake_run.sh` (when in `BGEE/` directory). You might see the warning "You are running snakemake in a SLURM job context. This is not recommended, as it may lead to unexpected behavior. Please run Snakemake directly on the login node." - this should be fine as the interactive (SLURM) session is merely handling workflow job submission. If you do experience problems, try `./snakemake_run.sh` within a screen session on your cluster's head/login node.  
+
+If using `profiles/local`, all workflow steps will be run as a single job. 
+1. Simply run `./snakemake_run.sh` on your desired cluster compute node.
+
 
 
 # Results structure #

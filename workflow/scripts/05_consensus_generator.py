@@ -2,7 +2,7 @@
 """
 Consensus Generator
 Generates consensus sequences from filtered alignments and creates final outputs
-Now includes coverage statistics calculation
+Now includes coverage statistics calculation and no line wrapping for FASTA output
 """
 
 import os
@@ -13,6 +13,7 @@ import statistics
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
+from Bio.SeqIO import FastaIO
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Tuple, Dict
 from datetime import datetime
@@ -252,22 +253,22 @@ def process_single_file(file_path: str, consensus_threshold: float, preprocessin
         consensus_record = SeqRecord(
             Seq(consensus_seq),
             id=consensus_id,
-            description=f"consensus_threshold_{consensus_threshold}"
+            description=""
         )
         
-        # Write individual consensus file directly to output_dir
+        # Write individual consensus file directly to output_dir (without wrapping)
         consensus_file = os.path.join(output_dir, f"{base_name}_fcleaner.fasta")
-        
         with open(consensus_file, 'w') as handle:
-            SeqIO.write([consensus_record], handle, "fasta")
+            writer = FastaIO.FastaWriter(handle, wrap=None)
+            writer.write_file([consensus_record])
         
-        # Write cleaned sequences
+        # Write cleaned sequences (without wrapping)
         cleaned_output_dir = os.path.join(output_dir, "filter_pass_seqs")
         os.makedirs(cleaned_output_dir, exist_ok=True)
-        cleaned_file = os.path.join(cleaned_output_dir, f"{base_name}_cleaned.fasta")
-        
-        with open(cleaned_file, 'w') as handle:
-            SeqIO.write(records, handle, "fasta")
+        cleaned_reads_file = os.path.join(cleaned_output_dir, f"{base_name}_cleaned.fasta")
+        with open(cleaned_reads_file, 'w') as handle:
+            writer = FastaIO.FastaWriter(handle, wrap=None)
+            writer.write_file(records)
         
         return {
             'base_name': base_name,
@@ -280,7 +281,7 @@ def process_single_file(file_path: str, consensus_threshold: float, preprocessin
             'consensus_length': consensus_length,
             'consensus_record': consensus_record,
             'consensus_file': consensus_file,
-            'cleaned_file': cleaned_file,
+            'cleaned_reads_file': cleaned_reads_file,
             **coverage_stats
         }
         
@@ -378,10 +379,11 @@ def main():
     successful_results = [r for r in results if r['status'] == 'success']
     
     if successful_results:
-        # Write concatenated consensus file
+        # Write concatenated consensus file (without wrapping)
         consensus_records = [r['consensus_record'] for r in successful_results]
         with open(args.consensus_fasta, 'w') as handle:
-            SeqIO.write(consensus_records, handle, "fasta")
+            writer = FastaIO.FastaWriter(handle, wrap=None)
+            writer.write_file(consensus_records)
         
         print(f"Concatenated consensus sequences written to: {args.consensus_fasta}")
     else:
@@ -397,7 +399,7 @@ def main():
             'consensus_at_content', 'ambiguous_bases', 'consensus_length',
             'cov_percent', 'cov_avg', 'cov_med', 
             'cov_max', 'cov_min',
-            'consensus_file', 'cleaned_file'
+            'consensus_file', 'cleaned_reads_file'
         ])
         
         for result in results:
@@ -419,7 +421,7 @@ def main():
                 result['cleaning_cov_max'],
                 result['cleaning_cov_min'],
                 result.get('consensus_file', ''),
-                result.get('cleaned_file', '')
+                result.get('cleaned_reads_file', '')
             ])
     
     print(f"Consensus metrics written to: {consensus_metrics_path}")

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Reference Filter
-Removes sequences that are outliers compared to reference sequences.
+Statistical Outlier Filter
+Removes sequences that are statistical outliers compared to consensus.
 
-1. Finds corresponding reference sequences for each alignment file
-2. Compares each sequence to the reference (not to a consensus generated from the alignment)
-3. Calculates deviation scores for each sequence compared to the reference
-4. Uses statistical thresholds to identify sequences that are outliers relative to the reference
-5. Removes outlier sequences that deviate too much from the reference pattern
-6. Outputs cleaned alignments with sequences that are similar to the reference
+1. Creates a reference consensus sequence using the most common nucleotide at each position
+2. Uses a threshold (default 0.5) to determine if a position has a clear consensus
+3. The script calculates two types of deviation scores for each sequence:
+    - Unweighted Deviation: Simple count of positions where the sequence differs from consensus. (number of differences) / (total valid positions). Treats all positions equally
+    - Weighted Deviation: Considers how conserved each position is in the alignment. (conservation-weighted differences) / (total conservation weight). Differences at highly conserved positions are weighted more heavily
+4. Calculates percentile thresholds for both deviation scores across all sequences. Sequences exceeding either threshold are flagged as outliers. Removes sequences that are statistical outliers in either scoring method.
 """
+
 
 import os
 import sys
@@ -20,7 +21,7 @@ from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict
 import gc
 from datetime import datetime
 from collections import Counter
@@ -36,36 +37,6 @@ def log_message(message: str, log_file=None, stdout=False):
     
     if stdout:
         print(formatted_msg, flush=True)
-        
-def get_base_filename(filepath: str) -> str:
-    """Extract base filename without extension and filter suffixes"""
-    basename = os.path.basename(filepath)
-    for ext in ['.fasta', '.fas', '.fa']:
-        if basename.lower().endswith(ext):
-            basename = basename[:-len(ext)]
-            break
-    
-    # Remove MGE-specific patterns first
-    import re
-    basename = re.sub(r'_r_\d+_s_\d+_align_.*', '', basename)
-    
-    # Remove filter suffixes in order  
-    for suffix in ['_outlier_filtered', '_at_filtered', '_human_filtered', '_align']:
-        basename = basename.replace(suffix, '')
-    
-    return basename
-
-def get_reference_sequence(reference_file: str) -> str:
-    """Extract reference sequence from a FASTA file"""
-    try:
-        references = list(SeqIO.parse(reference_file, "fasta"))
-        if not references:
-            raise ValueError("No sequences found in reference file")
-        if len(references) > 1:
-            print(f"Warning: Multiple sequences found in {reference_file}, using first one")
-        return str(references[0].seq)
-    except Exception as e:
-        raise ValueError(f"Error reading reference file: {str(e)}")
 
 def calculate_position_frequencies(sequences: List[str]) -> List[Dict[str, float]]:
     """Calculate residue frequencies at each position"""
@@ -153,12 +124,14 @@ def calculate_weighted_deviation(sequence: str, reference: str, frequencies: Lis
     
     return total_score / total_weight if total_weight > 0 else 0.0
 
-
-def process_single_file(file_path: str, reference_dir: str, outlier_percentile: float, 
-                       consensus_threshold: float, output_dir: str) -> Dict:
-    """Process a single FASTA file for reference-based filtering"""
+def process_single_file(file_path: str, outlier_percentile: float, consensus_threshold: float, output_dir: str) -> Dict:
+    """Process a single FASTA file for statistical outlier filtering"""
     try:
-        base_name = get_base_filename(file_path)
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        if '_human_filtered' in base_name:
+            base_name = base_name.replace('_human_filtered', '')
+        elif '_at_filtered' in base_name:
+            base_name = base_name.replace('_at_filtered', '')
         
         # Check if file is empty
         if os.path.getsize(file_path) == 0:
@@ -173,36 +146,7 @@ def process_single_file(file_path: str, reference_dir: str, outlier_percentile: 
                 'removed_sequences': []
             }
         
-        # Find reference file
-        reference_file = os.path.join(reference_dir, f"{base_name}_reference.fasta")
-        if not os.path.exists(reference_file):
-            return {
-                'file_path': file_path,
-                'base_name': base_name,
-                'status': 'skipped',
-                'reason': 'no_reference_file',
-                'input_count': 0,
-                'kept_count': 0,
-                'removed_count': 0,
-                'removed_sequences': []
-            }
-        
-        # Read reference sequence
-        try:
-            reference_seq = get_reference_sequence(reference_file)
-        except Exception as e:
-            return {
-                'file_path': file_path,
-                'base_name': base_name,
-                'status': 'error',
-                'reason': f'reference_read_error: {str(e)}',
-                'input_count': 0,
-                'kept_count': 0,
-                'removed_count': 0,
-                'removed_sequences': []
-            }
-        
-        # Read input sequences
+        # Read sequences
         try:
             records = list(SeqIO.parse(file_path, "fasta"))
         except Exception as e:
@@ -231,24 +175,29 @@ def process_single_file(file_path: str, reference_dir: str, outlier_percentile: 
         
         input_count = len(records)
         
-        # Generate consensus sequence from input for frequency calculation
+        # Generate consensus sequence
         sequences = [str(record.seq).upper() for record in records]
         consensus_seq, frequencies = generate_consensus_sequence(sequences, consensus_threshold)
         
-        # Pad reference sequence to match alignment length
-        max_len = max(len(seq) for seq in sequences) if sequences else len(reference_seq)
-        padded_reference = reference_seq.ljust(max_len, '-').upper()
+        if not consensus_seq:
+            return {
+                'file_path': file_path,
+                'base_name': base_name,
+                'status': 'error',
+                'reason': 'consensus_generation_failed',
+                'input_count': input_count,
+                'kept_count': 0,
+                'removed_count': 0,
+                'removed_sequences': []
+            }
         
-        # Calculate deviation scores for all sequences compared to reference
+        # Calculate deviation scores for all sequences
         deviation_scores = []
         for record in records:
             sequence = str(record.seq).upper()
             
-            # Pad sequence to match reference length
-            padded_sequence = sequence.ljust(len(padded_reference), '-')
-            
-            unweighted_dev = calculate_unweighted_deviation(padded_sequence, padded_reference)
-            weighted_dev = calculate_weighted_deviation(padded_sequence, padded_reference, frequencies)
+            unweighted_dev = calculate_unweighted_deviation(sequence, consensus_seq)
+            weighted_dev = calculate_weighted_deviation(sequence, consensus_seq, frequencies)
             
             deviation_scores.append({
                 'record': record,
@@ -276,13 +225,13 @@ def process_single_file(file_path: str, reference_dir: str, outlier_percentile: 
             is_outlier = (unweighted_dev > unweighted_threshold or weighted_dev > weighted_threshold)
             
             if is_outlier:
-                removal_reason = 'reference_outlier'
+                removal_reason = 'statistical_outlier'
                 if unweighted_dev > unweighted_threshold and weighted_dev > weighted_threshold:
-                    removal_reason = 'reference_outlier_both'
+                    removal_reason = 'statistical_outlier_both'
                 elif unweighted_dev > unweighted_threshold:
-                    removal_reason = 'reference_outlier_unweighted'
+                    removal_reason = 'statistical_outlier_unweighted'
                 elif weighted_dev > weighted_threshold:
-                    removal_reason = 'reference_outlier_weighted'
+                    removal_reason = 'statistical_outlier_weighted'
                 
                 removed_sequences.append({
                     'sequence_id': record.id,
@@ -297,7 +246,7 @@ def process_single_file(file_path: str, reference_dir: str, outlier_percentile: 
         
         # Write filtered sequences
         if kept_records:
-            output_file = os.path.join(output_dir, f"{base_name}_reference_filtered.fasta")
+            output_file = os.path.join(output_dir, f"{base_name}_outlier_filtered.fasta")
             with open(output_file, 'w') as handle:
                 SeqIO.write(kept_records, handle, "fasta")
         
@@ -310,8 +259,7 @@ def process_single_file(file_path: str, reference_dir: str, outlier_percentile: 
             'kept_count': len(kept_records),
             'removed_count': len(removed_sequences),
             'removed_sequences': removed_sequences,
-            'output_file': os.path.join(output_dir, f"{base_name}_reference_filtered.fasta") if kept_records else None,
-            'reference_file': reference_file,
+            'output_file': os.path.join(output_dir, f"{base_name}_outlier_filtered.fasta") if kept_records else None,
             'thresholds': {
                 'unweighted_threshold': unweighted_threshold,
                 'weighted_threshold': weighted_threshold,
@@ -322,7 +270,7 @@ def process_single_file(file_path: str, reference_dir: str, outlier_percentile: 
     except Exception as e:
         return {
             'file_path': file_path,
-            'base_name': get_base_filename(file_path),
+            'base_name': base_name,
             'status': 'error',
             'reason': f'processing_error: {str(e)}',
             'input_count': 0,
@@ -332,12 +280,12 @@ def process_single_file(file_path: str, reference_dir: str, outlier_percentile: 
         }
 
 def main():
-    parser = argparse.ArgumentParser(description='Filter sequences based on reference comparison')
+    parser = argparse.ArgumentParser(description='Filter sequences based on statistical outlier detection')
     parser.add_argument('--input-files-list', required=True, help='File containing list of FASTA files to process')
     parser.add_argument('--output-dir', required=True, help='Output directory for filtered files')
     parser.add_argument('--filtered-files-list', required=True, help='Output file listing successfully filtered files')
-    parser.add_argument('--metrics-csv', required=True, help='Output CSV file with filtering metrics')
-    parser.add_argument('--reference-dir', required=True, help='Directory containing reference sequences')
+    parser.add_argument('--summary-csv', required=True, help='Output CSV file with file-level summary metrics')
+    parser.add_argument('--metrics-csv', required=True, help='Output CSV file with detailed sequence removal metrics')
     parser.add_argument('--outlier-percentile', type=float, default=90.0, help='Percentile threshold for outlier detection')
     parser.add_argument('--consensus-threshold', type=float, default=0.5, help='Consensus generation threshold')
     parser.add_argument('--threads', type=int, default=1, help='Number of threads for parallel processing')
@@ -347,23 +295,17 @@ def main():
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Validate reference directory
-    if not os.path.exists(args.reference_dir):
-        print(f"Error: Reference directory does not exist: {args.reference_dir}")
-        sys.exit(1)
-    
     # Read input files
     with open(args.input_files_list, 'r') as f:
         input_files = [line.strip() for line in f if line.strip()]
     
-    print(f"Processing {len(input_files)} files with reference comparison (outlier percentile: {args.outlier_percentile})")
+    print(f"Processing {len(input_files)} files with outlier percentile {args.outlier_percentile}")
     
     # Process files in parallel
     results = []
     with ProcessPoolExecutor(max_workers=args.threads) as executor:
         future_to_file = {
-            executor.submit(process_single_file, file_path, args.reference_dir, 
-                          args.outlier_percentile, args.consensus_threshold, args.output_dir): file_path
+            executor.submit(process_single_file, file_path, args.outlier_percentile, args.consensus_threshold, args.output_dir): file_path
             for file_path in input_files
         }
         
@@ -376,7 +318,6 @@ def main():
                 if result['status'] == 'success':
                     thresholds = result.get('thresholds', {})
                     print(f"✓ {result['base_name']}: {result['kept_count']}/{result['input_count']} sequences kept")
-                    print(f"  Reference: {os.path.basename(result.get('reference_file', 'N/A'))}")
                     print(f"  Thresholds: unweighted={thresholds.get('unweighted_threshold', 'N/A'):.4f}, weighted={thresholds.get('weighted_threshold', 'N/A'):.4f}")
                 elif result['status'] == 'skipped':
                     print(f"⚠ {result['base_name']}: skipped ({result['reason']})")
@@ -404,50 +345,45 @@ def main():
                 f.write(result['output_file'] + '\n')
                 successful_files.append(result['output_file'])
     
-    # Write detailed metrics CSV
-    with open(args.metrics_csv, 'w', newline='') as csvfile:
+    # Write summary CSV (file-level statistics)
+    with open(args.summary_csv, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([
-            'file_path', 'base_name', 'sequence_id', 'removal_reason', 
-            'unweighted_deviation', 'weighted_deviation', 'unweighted_threshold', 'weighted_threshold',
-            'reference_file', 'step_name', 'input_count', 'kept_count', 'removed_count'
+            'file_path', 'base_name', 'unweighted_threshold', 'weighted_threshold',
+            'input_count', 'kept_count', 'removed_count'
         ])
         
         for result in results:
-            # Write file-level summary
             thresholds = result.get('thresholds', {})
             writer.writerow([
                 result['file_path'],
                 result['base_name'],
-                'FILE_SUMMARY',
-                result['reason'],
-                '',
-                '',
                 thresholds.get('unweighted_threshold', ''),
                 thresholds.get('weighted_threshold', ''),
-                result.get('reference_file', ''),
-                'reference_filter',
                 result['input_count'],
                 result['kept_count'],
                 result['removed_count']
             ])
-            
-            # Write individual removed sequences
+    
+    # Write detailed metrics CSV (individual sequence removal details)
+    with open(args.metrics_csv, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([
+            'base_name', 'sequence_id', 'removal_reason',
+            'unweighted_deviation', 'weighted_deviation', 'unweighted_threshold', 'weighted_threshold'
+        ])
+        
+        for result in results:
+            # Write individual removed sequences only
             for seq_info in result['removed_sequences']:
                 writer.writerow([
-                    result['file_path'],
                     result['base_name'],
                     seq_info['sequence_id'],
                     seq_info['removal_reason'],
                     f"{seq_info['unweighted_deviation']:.6f}",
                     f"{seq_info['weighted_deviation']:.6f}",
                     f"{seq_info['unweighted_threshold']:.6f}",
-                    f"{seq_info['weighted_threshold']:.6f}",
-                    result.get('reference_file', ''),
-                    'reference_filter',
-                    '',
-                    '',
-                    ''
+                    f"{seq_info['weighted_threshold']:.6f}"
                 ])
     
     # Summary statistics
@@ -455,14 +391,12 @@ def main():
     total_kept = sum(r['kept_count'] for r in results)
     total_removed = sum(r['removed_count'] for r in results)
     successful_count = len([r for r in results if r['status'] == 'success'])
-    skipped_no_ref = len([r for r in results if r['status'] == 'skipped' and r['reason'] == 'no_reference_file'])
     
-    print(f"\nReference Filtering Summary:")
+    print(f"\nStatistical Outlier Filtering Summary:")
     print(f"Files processed successfully: {successful_count}/{len(input_files)}")
-    print(f"Files skipped (no reference): {skipped_no_ref}")
     print(f"Total input sequences: {total_input}")
     print(f"Sequences kept: {total_kept}")
-    print(f"Sequences removed (reference outliers): {total_removed}")
+    print(f"Sequences removed (statistical outliers): {total_removed}")
     print(f"Filtered files written: {len(successful_files)}")
 
 if __name__ == "__main__":

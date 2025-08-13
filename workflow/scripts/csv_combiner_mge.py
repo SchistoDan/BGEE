@@ -7,6 +7,7 @@ Features:
 - Aligns data from subsequent files to match the first file's column order
 - Adds empty values for missing columns with appropriate warnings
 - Appends '_merge' to 'mge_params' column values for files with 'merge' in their filename
+  (only if '_merge' suffix doesn't already exist)
 
 Usage: 
 python csv_combiner.py -i input1.csv input2.csv input3.csv -o output.csv
@@ -81,7 +82,9 @@ def combine_csv_files(input_files, output_file):
                         for row in reader:
                             # Modify mge_params if this is a merge file and column exists
                             if is_merge_file and mge_params_idx >= 0 and mge_params_idx < len(row):
-                                row[mge_params_idx] = f"{row[mge_params_idx]}_merge"
+                                # Only append '_merge' if it doesn't already end with '_merge'
+                                if row[mge_params_idx] and not row[mge_params_idx].endswith('_merge'):
+                                    row[mge_params_idx] = f"{row[mge_params_idx]}_merge"
                             writer.writerow(row)
                         continue
                     
@@ -106,8 +109,10 @@ def combine_csv_files(input_files, output_file):
                             if map_idx is not None and map_idx < len(row):
                                 value = row[map_idx]
                                 # If this is the mge_params column and it's a merge file, append '_merge'
+                                # only if it doesn't already end with '_merge'
                                 if is_merge_file and col_idx == mge_params_idx and value:
-                                    value = f"{value}_merge"
+                                    if not value.endswith('_merge'):
+                                        value = f"{value}_merge"
                             new_row.append(value)
                         writer.writerow(new_row)
                         
