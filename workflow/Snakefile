@@ -1,4 +1,5 @@
 import os
+import time
 import csv
 import yaml
 import shutil
@@ -12,10 +13,10 @@ from threading import Lock
 from pathlib import Path
 
 
-# ===== CONFIGURATION AND VALIDATION =====
 
-# Config validation
+# ===== CONFIGURATION VALIDATION =====
 def validate_config(config):
+    """Validate all configuration parameters"""
     required_keys = ['samples_file', 'output_dir', 'r', 's', 'run_name', 'mge_path']
     missing_keys = [key for key in required_keys if key not in config]
     
@@ -32,17 +33,27 @@ def validate_config(config):
         sys.stderr.write(f"WARNING: MitoGeneExtractor path not found: {config['mge_path']}\n")
         sys.exit(1)
     
-    # Validate gene_fetch configuration
+    # Validate r and s parameters
+    if not isinstance(config['r'], list) or not config['r']:
+        sys.stderr.write("WARNING: 'r' must be a non-empty list\n")
+        sys.exit(1)
+    
+    if not isinstance(config['s'], list) or not config['s']:
+        sys.stderr.write("WARNING: 's' must be a non-empty list\n")
+        sys.exit(1)
+
+def validate_gene_fetch_config(config):
+    """Validate gene_fetch specific configuration"""
     run_gene_fetch = config.get("run_gene_fetch", False)
     if not isinstance(run_gene_fetch, bool):
         sys.stderr.write("WARNING: 'run_gene_fetch' must be a boolean (true/false)\n")
         sys.exit(1)
     
     if run_gene_fetch:
-        # Validate gene_fetch parameters
         gene_fetch_config = config.get("gene_fetch", {})
-        required_gene_fetch_keys = ['email', 'api_key', 'gene', 'input_type']
-        missing_gene_fetch_keys = [key for key in required_gene_fetch_keys if key not in gene_fetch_config or not gene_fetch_config[key]]
+        required_gene_fetch_keys = ['email', 'api_key', 'gene', 'input_type', 'minimum_length']
+        missing_gene_fetch_keys = [key for key in required_gene_fetch_keys 
+                                 if key not in gene_fetch_config or not gene_fetch_config[key]]
         
         if missing_gene_fetch_keys:
             sys.stderr.write(f"WARNING: Missing required gene_fetch configuration parameters: {', '.join(missing_gene_fetch_keys)}\n")
@@ -52,6 +63,14 @@ def validate_config(config):
         input_type = gene_fetch_config.get("input_type", "").lower()
         if input_type not in ["taxid", "hierarchical"]:
             sys.stderr.write("WARNING: 'input_type' must be either 'taxid' or 'hierarchical'\n")
+            sys.exit(1)
+			
+        # Validate minimum_length value
+        minimum_length = gene_fetch_config.get("minimum_length", 500)
+        try:
+            minimum_length = int(minimum_length)
+        except (ValueError, TypeError):
+            sys.stderr.write("ERROR: 'minimum_length' must be an integer\n")
             sys.exit(1)
             
         # Validate samples_file exists
@@ -68,35 +87,77 @@ def validate_config(config):
         if not os.path.exists(config['sequence_reference_file']):
             sys.stderr.write(f"WARNING: Sequence reference file not found: {config['sequence_reference_file']}\n")
             sys.exit(1)
-    
-    # Validate r and s parameters
-    if not isinstance(config['r'], list) or not config['r']:
-        sys.stderr.write("WARNING: 'r' must be a non-empty list\n")
+
+def validate_structural_validation_config(config):
+    """Validate structural validation configuration"""
+    run_structural_validation = config.get("run_structural_validation", True)
+    if not isinstance(run_structural_validation, bool):
+        sys.stderr.write("WARNING: 'run_structural_validation' must be a boolean (true/false)\n")
+        sys.exit(1)
+
+def validate_taxonomic_validation_config(config):
+    """Validate taxonomic validation configuration"""
+    run_taxonomic_validation = config.get("run_taxonomic_validation", True)
+    if not isinstance(run_taxonomic_validation, bool):
+        sys.stderr.write("WARNING: 'run_taxonomic_validation' must be a boolean (true/false)\n")
         sys.exit(1)
     
-    if not isinstance(config['s'], list) or not config['s']:
-        sys.stderr.write("WARNING: 's' must be a non-empty list\n")
-        sys.exit(1)
+    if run_taxonomic_validation:
+        taxonomic_validation_params = config.get("taxonomic_validation", {})
+        
+        # Validate database path
+        database_path = taxonomic_validation_params.get("database", "")
+        if not database_path:
+            sys.stderr.write("WARNING: 'database' path is required when run_taxonomic_validation is true\n")
+            sys.exit(1)
+        
+        if not os.path.exists(database_path):
+            sys.stderr.write(f"WARNING: Taxonomic validation (BLASTn) database not found: {database_path}\n")
+            sys.exit(1)
 		
-    # Validate run_fasta_compare parameter
-    run_fasta_compare = config.get("run_fasta_compare", True)  # Default to True
-    if not isinstance(run_fasta_compare, bool):
-        sys.stderr.write("WARNING: 'run_fasta_compare' must be a boolean (true/false)\n")
-        sys.exit(1)
+        # Validate BOLD taxonomy file
+        bold_database_taxonomy = taxonomic_validation_params.get("bold_database_taxonomy", "")
+        if not bold_database_taxonomy:
+            sys.stderr.write("WARNING: 'bold_database_taxonomy' path is required when run_taxonomic_validation is true\n")
+            sys.exit(1)
+        if not os.path.exists(bold_database_taxonomy):
+            sys.stderr.write(f"WARNING: BOLD taxonomy file not found: {bold_database_taxonomy}\n")
+            sys.exit(1)
+        
+        # Validate expected taxonomy file
+        expected_taxonomy = taxonomic_validation_params.get("expected_taxonomy", "")
+        if not expected_taxonomy:
+            sys.stderr.write("WARNING: 'expected_taxonomy' path is required when run_taxonomic_validation is true\n")
+            sys.exit(1)
+        if not os.path.exists(expected_taxonomy):
+            sys.stderr.write(f"WARNING: Expected taxonomy file not found: {expected_taxonomy}\n")
+            sys.exit(1)
+        
+        # Validate min_pident parameter
+        min_pident = taxonomic_validation_params.get("min_pident", "80")
+        try:
+            min_pident_float = float(min_pident)
+            if not (0 <= min_pident_float <= 100):
+                sys.stderr.write("WARNING: 'min_pident' must be between 0 and 100\n")
+                sys.exit(1)
+        except (ValueError, TypeError):
+            sys.stderr.write("WARNING: 'min_pident' must be a valid number\n")
+            sys.exit(1)
 
-# Validate configuration file
+# Run all validations
 validate_config(config)
+validate_gene_fetch_config(config)
+validate_structural_validation_config(config)
+validate_taxonomic_validation_config(config)
 
-# Print configuration for debugging
+# Print configuration
 print("\n=====Configuration loaded:=====\n", config) 
 
 
 
-
 # ===== DATA PARSING FUNCTIONS =====
-
-# Parse samples from .csv files
 def parse_samples(samples_file):
+    """Parse samples from .csv files"""
     samples = {}
     with open(samples_file, mode='r') as infile:
         reader = csv.DictReader(infile)
@@ -107,8 +168,8 @@ def parse_samples(samples_file):
             samples[sample_id] = {"R1": forward_read, "R2": reverse_read}
     return samples
 
-# Parse references from CSV
 def parse_sequence_references(sequence_reference_file):
+    """Parse references from CSV"""
     sequence_references = {}
     with open(sequence_reference_file, mode='r') as infile:
         reader = csv.DictReader(infile)
@@ -126,12 +187,10 @@ def parse_sequence_references(sequence_reference_file):
 
 
 
-# ===== PARAMETER SETUP & CONFIG PARSING =====
-
-# Load parameters from config file
+# ===== CONFIGURATION PARAMETERS =====
+# Load basic parameters
 samples = parse_samples(config["samples_file"])
 run_name = config["run_name"]
-
 r = config["r"]
 s = config["s"]
 n = config["n"]
@@ -139,18 +198,19 @@ C = config["C"]
 t = config["t"]
 mge_path = config["mge_path"]
 
-
-# Determine sequence reference file path based on gene_fetch setting
+# Gene fetch configuration
 run_gene_fetch = config.get("run_gene_fetch", False)
 if run_gene_fetch:
-    sequence_reference_file_path = os.path.join(config["output_dir"], "references", "sequence_references.csv")
+    sequence_reference_file_path = os.path.join(config["output_dir"], "02_references", "sequence_references.csv")
 else:
     sequence_reference_file_path = config["sequence_reference_file"]
 
+# Downsampling configuration
+downsampling_enabled = config.get("downsampling", {}).get("enabled", False)
+max_reads = config.get("downsampling", {}).get("max_reads", 0)
 
-
-# Load fasta_cleaner parameters
-fasta_cleaner_params = config.get("fasta_cleaner", {	
+# Fasta cleaner configuration
+fasta_cleaner_params = config.get("fasta_cleaner", {
     "consensus_threshold": 0.5,
     "human_threshold": 0.95,
     "at_difference": 0.1,
@@ -161,55 +221,80 @@ fasta_cleaner_params = config.get("fasta_cleaner", {
     "disable_outliers": False
 })
 
-# Check if fasta_compare should be performed
-run_fasta_compare = config.get("run_fasta_compare", True)  # Default to True
-
-# Load fasta_compare parameters
-fasta_compare_params = config.get("fasta_compare", {
+# Structural validation configuration
+run_structural_validation = config.get("run_structural_validation", True)
+structural_validation_params = config.get("structural_validation", {
     "target": "cox1",
-    "verbose": False
+    "verbose": False,
+    "relaxed": False
 })
 
-# Load rule resources 
+# Taxonomic validation configuration
+run_taxonomic_validation = config.get("run_taxonomic_validation", True)
+taxonomic_validation_params = config.get("taxonomic_validation", {
+    "database": "",
+    "verbose": True,
+    "blast_options": "-evalue 1e-5 -max_target_seqs 20 -num_threads 1",
+    "bold_database_taxonomy": "",
+    "expected_taxonomy": "",
+    "taxval_rank": "family",
+    "min_pident": "80"
+})
+
+# Rule resources
 rule_resources = config["rules"]
 
+
+
+# ===== DIRECTORY STRUCTURE SETUP =====
 # Create main output directory
 main_output_dir = config["output_dir"]
 Path(main_output_dir).mkdir(parents=True, exist_ok=True)
 
-# Create separate output directories for each preprocessing mode
-output_dir_merge = os.path.join(main_output_dir, "merge_mode")
-output_dir_concat = os.path.join(main_output_dir, "concat_mode")
+# Create preprocessing directories
+preprocessing_dir = os.path.join(main_output_dir, "01_preprocessing")
+preprocessing_dir_merge = os.path.join(preprocessing_dir, "merge_mode")
+preprocessing_dir_concat = os.path.join(preprocessing_dir, "concat_mode")
+
+# Create barcode recovery directories
+barcode_recovery_dir = os.path.join(main_output_dir, "03_barcode_recovery")
+barcode_recovery_dir_merge = os.path.join(barcode_recovery_dir, "merge_mode")
+barcode_recovery_dir_concat = os.path.join(barcode_recovery_dir, "concat_mode")
 
 # Create references directory if using gene_fetch
 if run_gene_fetch:
-    references_dir = os.path.join(main_output_dir, "references")
+    references_dir = os.path.join(main_output_dir, "02_references")
     Path(references_dir).mkdir(parents=True, exist_ok=True)
-
-# Check if reference filtering should be performed
-reference_dir = fasta_cleaner_params.get("reference_dir", None)
-use_reference_filtering = reference_dir and reference_dir not in ["None", "null", "", None]
 
 
 
 # ===== HELPER FUNCTIONS =====
+def get_hmm_file_for_target(target):
+    """Map target gene to corresponding HMM file path"""
+    hmm_mapping = {
+        "cox1": "resources/hmm/COI-5P.hmm",
+        "coi": "resources/hmm/COI-5P.hmm",
+        "rbcl": "resources/hmm/rbcL.hmm",
+        "matk": "resources/hmm/matK.hmm"
+    }
+    
+    target_lower = target.lower()
+    if target_lower not in hmm_mapping:
+        raise ValueError(f"Unknown target '{target}'. Available targets: {list(hmm_mapping.keys())}")
+    
+    return hmm_mapping[target_lower]
 
-# Handles sequence_reference_file dependency for MGE and file path
 def get_protein_reference(wildcards):
     """Get protein reference path for a sample"""
     if run_gene_fetch:
-        # Don't read the CSV - construct the path directly
-        # Assumes gene_fetch creates files like: references/{sample}_protein.faa
-        return os.path.join(main_output_dir, f"references/protein/{wildcards.sample}.fasta")
+        return os.path.join(main_output_dir, f"02_references/protein/{wildcards.sample}.fasta")
     else:
-        # For manual references, we can read the file immediately since it exists
         sequence_refs = parse_sequence_references(config["sequence_reference_file"])
         return sequence_refs[wildcards.sample]["protein_path"]
-	
-# Generate all combinations for each sample+reference pair with all r and s values
+
 def get_all_mge_consensus_files(mode):
     """Generate list of expected consensus files for a given mode"""
-    output_dir = output_dir_merge if mode == "merge" else output_dir_concat
+    output_dir = barcode_recovery_dir_merge if mode == "merge" else barcode_recovery_dir_concat
     files = []
     
     for sample in samples.keys():
@@ -219,87 +304,103 @@ def get_all_mge_consensus_files(mode):
     
     return files
 
-# Get the right input for merge mode
 def get_mge_input_merge(wildcards):
-    return os.path.join(output_dir_merge, f"trimmed_data/{wildcards.sample}_merged_clean.fq")
+    """Get the right input for merge mode"""
+    return os.path.join(preprocessing_dir_merge, f"trimmed_data/{wildcards.sample}_merged_clean.fq")
 
-# Get input for concat mode
 def get_mge_input_concat(wildcards):
-    return os.path.join(output_dir_concat, f"trimmed_data/{wildcards.sample}/{wildcards.sample}_concat_trimmed.fq")
+    """Get input for concat mode"""
+    return os.path.join(preprocessing_dir_concat, f"trimmed_data/{wildcards.sample}/{wildcards.sample}_concat_trimmed.fq")
+
+# Set up derived parameters
+hmm_file_path = get_hmm_file_for_target(structural_validation_params["target"]) if run_structural_validation else ""
+reference_dir = fasta_cleaner_params.get("reference_dir", None)
+use_reference_filtering = reference_dir and reference_dir not in ["None", "null", "", None]
 
 
 
-# ===== SNAKEMAKE RULES =====
-
-# Rule them all
+# ===== SNAKEMAKE RULE ALL =====
 rule all:
     input:
-        # ==== GENE FETCH OUTPUT (CONDITIONAL) ====
-        (os.path.join(main_output_dir, "references/sequence_references.csv") if run_gene_fetch else []),
+        # ==== GENE FETCH (CONDITIONAL) ====
+        (os.path.join(main_output_dir, "02_references/sequence_references.csv") if run_gene_fetch else []),
         
-        # ==== MERGE MODE OUTPUTS ====
-        os.path.join(output_dir_merge, "logs/clean_headers.log"),
-        os.path.join(output_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
-        os.path.join(output_dir_merge, "logs/mge/alignment_files.log"),
-        os.path.join(output_dir_merge, f"{run_name}_merge-stats.csv"),
-        os.path.join(output_dir_merge, "logs/cleaning_complete.txt"),
-        os.path.join(output_dir_merge, "fasta_cleaner/combined_statistics.csv"),
-        os.path.join(output_dir_merge, "logs/file_cleanup_complete.txt"),
-        os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
-        os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
-        os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
-        os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
-        os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
-        os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
-        (os.path.join(output_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filtered.txt") if use_reference_filtering else []),
-        (os.path.join(output_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv") if use_reference_filtering else []), 
-        os.path.join(output_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
-        os.path.join(output_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv"),
-        os.path.join(output_dir_merge, "logs/exonerate_cleanup_complete.txt"),
+        # ==== PREPROCESSING OUTPUTS ====
+        # Merge mode preprocessing
+        os.path.join(preprocessing_dir_merge, "logs/clean_headers/clean_headers.log"),
         
-        # ==== CONCAT MODE OUTPUTS ====
-        os.path.join(output_dir_concat, "logs/concat_reads.log"),
-        os.path.join(output_dir_concat, "logs/trim_galore.log"),
-        expand(os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq.gz"), sample=list(samples.keys())),
-        expand(os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq.gz"), sample=list(samples.keys())), 
-        os.path.join(output_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
-        os.path.join(output_dir_concat, "logs/mge/alignment_files.log"),
-        os.path.join(output_dir_concat, f"{run_name}_cons_combined-concat-stats.csv"),
-        os.path.join(output_dir_concat, "logs/cleaning_complete.txt"),
-        os.path.join(output_dir_concat, "fasta_cleaner/combined_statistics.csv"),
-        os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
-        os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
-        os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
-        os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
-        os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
-        os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
-        (os.path.join(output_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filtered.txt") if use_reference_filtering else []),
-        (os.path.join(output_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv") if use_reference_filtering else []),
-        os.path.join(output_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
-        os.path.join(output_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv"),
-        os.path.join(output_dir_concat, "logs/exonerate_cleanup_complete.txt"),
+        # Concat mode preprocessing
+        os.path.join(preprocessing_dir_concat, "logs/concat/concat_reads.log"),
+        os.path.join(preprocessing_dir_concat, "logs/trim_galore/trim_galore.log"),
+        expand(os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq.gz"), sample=list(samples.keys())),
+        expand(os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq.gz"), sample=list(samples.keys())), 
+        
+        # ==== BARCODE RECOVERY OUTPUTS ====
+        # Merge mode barcode recovery
+        os.path.join(barcode_recovery_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
+        os.path.join(barcode_recovery_dir_merge, "logs/mge/alignment_files.log"),
+        os.path.join(barcode_recovery_dir_merge, f"{run_name}_merge-stats.csv"),
+        os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner_complete.txt"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/combined_statistics.csv"),
+        os.path.join(barcode_recovery_dir_merge, "logs/exonerate_int_cleanup_complete.txt"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
+        (os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filtered.txt") if use_reference_filtering else []),
+        (os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv") if use_reference_filtering else []), 
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
+        os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv"),
+        
+        # Concat mode barcode recovery
+        os.path.join(barcode_recovery_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
+        os.path.join(barcode_recovery_dir_concat, "logs/mge/alignment_files.log"),
+        os.path.join(barcode_recovery_dir_concat, f"{run_name}_concat-stats.csv"),
+        os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner_complete.txt"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/combined_statistics.csv"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
+        (os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filtered.txt") if use_reference_filtering else []),
+        (os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv") if use_reference_filtering else []),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
+        os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv"),
+        os.path.join(barcode_recovery_dir_concat, "logs/exonerate_int_cleanup_complete.txt"),
 		
-        # ==== FASTA COMPARE OUTPUTS (CONDITIONAL) ====
-        (os.path.join(main_output_dir, f"fasta_compare/{run_name}_fasta_compare.csv") if run_fasta_compare else []),
-        (os.path.join(main_output_dir, f"fasta_compare/{run_name}_full_sequences.fasta") if run_fasta_compare else []),
-        (os.path.join(main_output_dir, f"fasta_compare/{run_name}_barcode_sequences.fasta") if run_fasta_compare else []),
+		# ==== FASTA CLEANER (EXTRA) ====
+        os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
+        os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
 		
+        # ==== STRUCTURAL VALIDATION (CONDITIONAL) ====
+        (os.path.join(main_output_dir, f"04_barcode_validation/structural/structural_validation.csv") if run_structural_validation else []),
+        (os.path.join(main_output_dir, f"04_barcode_validation/structural/{run_name}_full_sequences.fasta") if run_structural_validation else []),
+        (os.path.join(main_output_dir, f"04_barcode_validation/structural/{run_name}_barcode_sequences.fasta") if run_structural_validation else []),
+		
+		# ==== TAXONOMIC VALIDATION (CONDITIONAL) ====
+        (os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/01_local_blast_output.csv") if run_taxonomic_validation else []),
+        (os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/{run_name}_barcode_sequences.fasta") if run_taxonomic_validation else []),
+       
         # ==== FINAL OUTPUTS ====
-        os.path.join(main_output_dir, f"{run_name}_combined_stats.csv"),
-        os.path.join(output_dir_merge, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
-        os.path.join(output_dir_concat, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
-        os.path.join(output_dir_concat, "logs/file_cleanup_complete.txt"),
-
-
+        os.path.join(barcode_recovery_dir, f"{run_name}_bgee_stats.csv"),
+        os.path.join(barcode_recovery_dir, f"{run_name}_all_cons_combined.fasta"),
+        (os.path.join(main_output_dir, f"{run_name}_final_stats.csv") if run_structural_validation and run_taxonomic_validation else []),
+        os.path.join(preprocessing_dir_concat, "logs/final_cleanup_complete.txt"),
+        os.path.join(preprocessing_dir_merge, "logs/final_cleanup_complete.txt"),
+		
 # ===== GENE FETCH RULE =====
 if run_gene_fetch:
     rule gene_fetch:
         input:
             samples_csv=lambda wildcards: config["gene_fetch"].get("samples_file", config["samples_file"])
         output:
-            sequence_references=os.path.join(main_output_dir, "references/sequence_references.csv"),
+            sequence_references=os.path.join(main_output_dir, "02_references/sequence_references.csv"),
             protein_files=expand(
-                os.path.join(main_output_dir, "references/protein/{sample}.fasta"),
+                os.path.join(main_output_dir, "02_references/protein/{sample}.fasta"),
                 sample=list(samples.keys())
             )
         params:
@@ -308,11 +409,12 @@ if run_gene_fetch:
             gene=config["gene_fetch"]["gene"],
             input_type=config["gene_fetch"]["input_type"].lower(),
             genbank=config["gene_fetch"].get("genbank", False),
-            output_dir=os.path.join(main_output_dir, "references"),
+            output_dir=os.path.join(main_output_dir, "02_references"),
+            min_length=config["gene_fetch"].get("minimum_length", False),
             genbank_flag="--genbank" if config["gene_fetch"].get("genbank", False) else "",
             input_flag="--in" if config["gene_fetch"]["input_type"].lower() == "taxid" else "--in2"
         log:
-            os.path.join(main_output_dir, "references/gene_fetch.log")
+            os.path.join(main_output_dir, "02_references/gene_fetch.log")
         threads: rule_resources["gene_fetch"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["gene_fetch"]["mem_mb"] * attempt
@@ -337,6 +439,7 @@ if run_gene_fetch:
                 {params.input_flag} {input.samples_csv} \\
                 --gene {params.gene} \\
                 --type protein \\
+                --protein-size {params.min_length} \\
                 {params.genbank_flag} \\
                 --out {params.output_dir} \\
                 >> {log} 2>&1
@@ -352,22 +455,24 @@ if run_gene_fetch:
             """
 
 
-# ===== MERGE MODE RULES =====
+# ===== PREPROCESSING RULES - MERGE MODE =====
 rule fastp_pe_merge:
     input:
         R1=lambda wildcards: samples[wildcards.sample]["R1"],
         R2=lambda wildcards: samples[wildcards.sample]["R2"]
     output:
-        R1_trimmed=temp(os.path.join(output_dir_merge, "trimmed_data/{sample}_R1_trimmed.fq.gz")),
-        R2_trimmed=temp(os.path.join(output_dir_merge, "trimmed_data/{sample}_R2_trimmed.fq.gz")),
-        report=os.path.join(output_dir_merge, "trimmed_data/{sample}_fastp_report.html"),
-        json=os.path.join(output_dir_merge, "trimmed_data/{sample}_fastp_report.json"),
-        merged_reads=os.path.join(output_dir_merge, "trimmed_data/{sample}_merged.fq"),
-        unpaired_R1=temp(os.path.join(output_dir_merge, "trimmed_data/unpaired/{sample}_unpaired_R1.fq")),
-        unpaired_R2=temp(os.path.join(output_dir_merge, "trimmed_data/unpaired/{sample}_unpaired_R2.fq"))
+        R1_trimmed=temp(os.path.join(preprocessing_dir_merge, "trimmed_data/{sample}_R1_trimmed.fq.gz")),
+        R2_trimmed=temp(os.path.join(preprocessing_dir_merge, "trimmed_data/{sample}_R2_trimmed.fq.gz")),
+        report=os.path.join(preprocessing_dir_merge, "trimmed_data/{sample}_fastp_report.html"),
+        json=os.path.join(preprocessing_dir_merge, "trimmed_data/{sample}_fastp_report.json"),
+        merged_reads=os.path.join(preprocessing_dir_merge, "trimmed_data/{sample}_merged.fq"),
+        unpaired_R1=temp(os.path.join(preprocessing_dir_merge, "trimmed_data/unpaired/{sample}_unpaired_R1.fq")),
+        unpaired_R2=temp(os.path.join(preprocessing_dir_merge, "trimmed_data/unpaired/{sample}_unpaired_R2.fq"))
+    params:
+        reads_to_process=max_reads if downsampling_enabled else 0
     log:
-        out=os.path.join(output_dir_merge, "logs/fastp/{sample}_fastp.out"),
-        err=os.path.join(output_dir_merge, "logs/fastp/{sample}_fastp.err")
+        out=os.path.join(preprocessing_dir_merge, "logs/fastp/{sample}_fastp.out"),
+        err=os.path.join(preprocessing_dir_merge, "logs/fastp/{sample}_fastp.err")
     threads: rule_resources["fastp_pe_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["fastp_pe_merge"]["mem_mb"] * attempt
@@ -376,38 +481,63 @@ rule fastp_pe_merge:
         """
         set -euo pipefail
 		
-        # Log job info
-        echo "Starting fastp merge for sample {wildcards.sample}" > {log.out}
+        # Log job start
+        echo "======== Fastp Merge Processing ========" > {log.out}
+        echo "Sample: {wildcards.sample}" >> {log.out}
         echo "Started: $(date)" >> {log.out}
         echo "Input files: {input.R1}, {input.R2}" >> {log.out}
+        echo "Downsampling: --reads_to_process {params.reads_to_process}" >> {log.out}
+        echo "Threads: {threads}" >> {log.out}
+        echo "=========================================" >> {log.out}
 
-        fastp -i {input.R1} -I {input.R2} \
-              -o {output.R1_trimmed} -O {output.R2_trimmed} \
-              --adapter_sequence=AGATCGGAAGAGCACACGTCTGAACTCCAGTCA \
-              --adapter_sequence_r2=AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \
-              --dedup \
-              --trim_poly_g \
-              --thread {threads} \
-              --merge --merged_out {output.merged_reads} \
-              --unpaired1 {output.unpaired_R1} \
-              --unpaired2 {output.unpaired_R2} \
-              -h {output.report} -j {output.json} \
-              > {log.out} 2> {log.err}
+        # Check input files exist
+        if [[ ! -f "{input.R1}" ]] || [[ ! -f "{input.R2}" ]]; then
+            echo "ERROR: Input files not found" >> {log.out}
+            exit 1
+        fi
 
-        # Log job completion and disk usage
-        echo "Completed: $(date)" >> {log.out}
-        echo "Output files sizes:" >> {log.out}
-        du -h {output.R1_trimmed} {output.R2_trimmed} {output.merged_reads} >> {log.out}
+        # Log input file sizes
+        echo "Input file sizes:" >> {log.out}
+        echo "  R1: $(numfmt --to=iec $(stat -c%s {input.R1}))" >> {log.out}
+        echo "  R2: $(numfmt --to=iec $(stat -c%s {input.R2}))" >> {log.out}
+
+        # Run fastp
+        echo "Running fastp: $(date)" >> {log.out}
+        if fastp -i {input.R1} -I {input.R2} \\
+              -o {output.R1_trimmed} -O {output.R2_trimmed} \\
+              --adapter_sequence=AGATCGGAAGAGCACACGTCTGAACTCCAGTCA \\
+              --adapter_sequence_r2=AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \\
+              --dedup \\
+              --trim_poly_g \\
+              --thread {threads} \\
+              --merge --merged_out {output.merged_reads} \\
+              --unpaired1 {output.unpaired_R1} \\
+              --unpaired2 {output.unpaired_R2} \\
+              --reads_to_process {params.reads_to_process} \\
+              -h {output.report} -j {output.json} \\
+              >> {log.out} 2>> {log.err}; then
+            echo "Fastp completed successfully: $(date)" >> {log.out}
+        else
+            echo "ERROR: Fastp failed with exit code $?" >> {log.out}
+            exit 1
+        fi
+
+        # Log output file sizes
+        echo "Output file sizes:" >> {log.out}
+        echo "  R1_trimmed: $(numfmt --to=iec $(stat -c%s {output.R1_trimmed}))" >> {log.out}
+        echo "  R2_trimmed: $(numfmt --to=iec $(stat -c%s {output.R2_trimmed}))" >> {log.out}
+        echo "  Merged: $(numfmt --to=iec $(stat -c%s {output.merged_reads}))" >> {log.out}
+        echo "Processing completed: $(date)" >> {log.out}
         """
 
 rule clean_headers_merge:
     input:
-        merged_reads=os.path.join(output_dir_merge, "trimmed_data/{sample}_merged.fq")
+        merged_reads=os.path.join(preprocessing_dir_merge, "trimmed_data/{sample}_merged.fq")
     output:
-        clean_merged=temp(os.path.join(output_dir_merge, "trimmed_data/{sample}_merged_clean.fq"))
+        clean_merged=temp(os.path.join(preprocessing_dir_merge, "trimmed_data/{sample}_merged_clean.fq"))
     log:
-        out=temp(os.path.join(output_dir_merge, "logs/clean_headers/{sample}.out")),
-        err=temp(os.path.join(output_dir_merge, "logs/clean_headers/{sample}.err"))
+        out=temp(os.path.join(preprocessing_dir_merge, "logs/clean_headers/{sample}.out")),
+        err=temp(os.path.join(preprocessing_dir_merge, "logs/clean_headers/{sample}.err"))
     threads: rule_resources["clean_headers_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["clean_headers_merge"]["mem_mb"] * attempt
@@ -416,54 +546,34 @@ rule clean_headers_merge:
         """
         set -euo pipefail
 
-        # Create directories first to avoid race conditions
+        # Create directories
         mkdir -p $(dirname {log.out})
         mkdir -p $(dirname {output.clean_merged})
 
-        # Create log header with timestamp and sample ID
+        # Create log header
         echo "Cleaning headers for {wildcards.sample}" > {log.out}
         echo "Started: $(date)" >> {log.out}
         echo "Host: $(hostname)" >> {log.out}
 
-        # Add robust error handling with retries
-        for attempt in $(seq 1 3); do
-            echo "Attempt $attempt of 3" >> {log.out}
-
-            if ! [ -r "{input.merged_reads}" ]; then
-                echo "Input file not readable, waiting 10 seconds..." >> {log.out}
-                sleep 10
-                continue
-            fi
-
-            # Use perl with temporary file approach to be more robust
-            TMP_OUTPUT=$(mktemp)
-            if perl -pe 's/ /_/g' {input.merged_reads} > $TMP_OUTPUT 2>> {log.err}; then # Redirect perl errors
-                # Move the temp file to the final location only if successful
-                mv $TMP_OUTPUT {output.clean_merged}
-                echo "Completed: $(date)" >> {log.out}
-                echo "Output file size: $(du -h {output.clean_merged} | cut -f1)" >> {log.out}
-                echo "--------------------------------------------" >> {log.out}
-                exit 0
-            else
-                echo "Perl command failed on attempt $attempt" >> {log.out}
-                rm -f $TMP_OUTPUT
-                sleep 5
-            fi
-        done
-
-        # If all attempts fail
-        echo "FAILED after 3 attempts: $(date)" >> {log.out}
-        exit 1
+        # Simple sed replacement with error handling
+        if sed 's/ /_/g' {input.merged_reads} > {output.clean_merged} 2>> {log.err}; then
+            echo "Completed: $(date)" >> {log.out}
+            echo "Output file size: $(numfmt --to=iec $(stat -c%s {output.clean_merged}))" >> {log.out}
+            echo "--------------------------------------------" >> {log.out}
+        else
+            echo "FAILED: $(date)" >> {log.out}
+            exit 1
+        fi
         """
 
 rule aggregate_clean_headers_logs_merge:
     input:
-        sample_logs=expand(os.path.join(output_dir_merge, "logs/clean_headers/{sample}.out"), sample=list(samples.keys()))
+        sample_logs=expand(os.path.join(preprocessing_dir_merge, "logs/clean_headers/{sample}.out"), sample=list(samples.keys()))
     output:
-        combined_log=os.path.join(output_dir_merge, "logs/clean_headers.log") 
+        combined_log=os.path.join(preprocessing_dir_merge, "logs/clean_headers/clean_headers.log") 
     log:
-        out=os.path.join(output_dir_merge, "logs/aggregate_clean_headers.out"),
-        err=os.path.join(output_dir_merge, "logs/aggregate_clean_headers.err")
+        out=os.path.join(preprocessing_dir_merge, "logs/clean_headers/aggregate_clean_headers.out"),
+        err=os.path.join(preprocessing_dir_merge, "logs/clean_headers/aggregate_clean_headers.err")
     threads: rule_resources["aggregate_clean_headers_logs_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["aggregate_clean_headers_logs_merge"]["mem_mb"] * attempt
@@ -482,26 +592,22 @@ rule aggregate_clean_headers_logs_merge:
         cat {input.sample_logs} >> {output.combined_log} 2>> {log.err}
         echo "Aggregation complete." >> {log.out}
         """
-
-# Helper function to get the right input for merge mode
-def get_mge_input_merge(wildcards):
-    return os.path.join(output_dir_merge, f"trimmed_data/{wildcards.sample}_merged_clean.fq")
-
-
-# ===== CONCAT MODE RULES =====
-
+		
+# ===== PREPROCESSING RULES - CONCAT MODE =====
 rule fastp_pe_concat:
     input:
         R1=lambda wildcards: samples[wildcards.sample]["R1"],
         R2=lambda wildcards: samples[wildcards.sample]["R2"]
     output:
-        R1_trimmed=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq"),
-        R2_trimmed=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq"),
-        report=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_fastp_report.html"),
-        json=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_fastp_report.json")
+        R1_trimmed=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq"),
+        R2_trimmed=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq"),
+        report=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_fastp_report.html"),
+        json=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_fastp_report.json")
+    params:
+        reads_to_process=max_reads if downsampling_enabled else 0
     log:
-        out=os.path.join(output_dir_concat, "logs/fastp/{sample}_fastp.out"),
-        err=os.path.join(output_dir_concat, "logs/fastp/{sample}_fastp.err")
+        out=os.path.join(preprocessing_dir_concat, "logs/fastp/{sample}_fastp.out"),
+        err=os.path.join(preprocessing_dir_concat, "logs/fastp/{sample}_fastp.err")
     threads: rule_resources["fastp_pe_concat"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["fastp_pe_concat"]["mem_mb"] * attempt
@@ -510,38 +616,32 @@ rule fastp_pe_concat:
         """
         set -euo pipefail
 
-        # Create output directories if they don't exist
+        # Create output directories
         mkdir -p $(dirname {output.R1_trimmed})
         mkdir -p $(dirname {output.report})
         
-        # Create a consistent log header with timestamp and sample ID
-        LOG_HEADER="[$(date '+%Y-%m-%d %H:%M:%S')] Sample: {wildcards.sample}"
+        # Log job start
+        echo "======== Fastp Concat Processing ========" > {log.out}
+        echo "Sample: {wildcards.sample}" >> {log.out}
+        echo "Started: $(date)" >> {log.out}
+        echo "Input files: {input.R1}, {input.R2}" >> {log.out}
+        echo "Downsampling: --reads_to_process {params.reads_to_process}" >> {log.out}
+        echo "Threads: {threads}" >> {log.out}
+        echo "=========================================" >> {log.out}
         
-        # Initialize the log files
-        echo "$LOG_HEADER - Starting fastp processing (attempt ${{SLURM_RESTART_COUNT:-1}})" > {log.out}
-        echo "$LOG_HEADER - Input files: {input.R1}, {input.R2}" >> {log.out}
-        echo "$LOG_HEADER - Output files: {output.R1_trimmed}, {output.R2_trimmed}" >> {log.out}
-        
-        # Log input file sizes and existence
-        echo "$LOG_HEADER - Input file details:" >> {log.out}
-        if [[ -f "{input.R1}" ]]; then
-            echo "  R1: $(du -h {input.R1} | cut -f1) ($(stat -c%s {input.R1}) bytes)" >> {log.out}
-        else
-            echo "  ERROR: R1 input file does not exist" >> {log.out}
+        # Check input files exist
+        if [[ ! -f "{input.R1}" ]] || [[ ! -f "{input.R2}" ]]; then
+            echo "ERROR: Input files not found" >> {log.out}
             exit 1
         fi
+
+        # Log input file sizes
+        echo "Input file sizes:" >> {log.out}
+        echo "  R1: $(numfmt --to=iec $(stat -c%s {input.R1}))" >> {log.out}
+        echo "  R2: $(numfmt --to=iec $(stat -c%s {input.R2}))" >> {log.out}
         
-        if [[ -f "{input.R2}" ]]; then
-            echo "  R2: $(du -h {input.R2} | cut -f1) ($(stat -c%s {input.R2}) bytes)" >> {log.out}
-        else
-            echo "  ERROR: R2 input file does not exist" >> {log.out}
-            exit 1
-        fi
-        
-        # Run fastp with comprehensive logging
-        echo "$LOG_HEADER - Starting fastp: $(date)" >> {log.out}
-        
-        # Execute fastp with error handling
+        # Run fastp
+        echo "Running fastp: $(date)" >> {log.out}
         if fastp -i {input.R1} -I {input.R2} \\
                  -o {output.R1_trimmed} -O {output.R2_trimmed} \\
                  -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA \\
@@ -549,80 +649,41 @@ rule fastp_pe_concat:
                  --dedup \\
                  --trim_poly_g \\
                  --thread {threads} \\
+                 --reads_to_process {params.reads_to_process} \\
                  -h {output.report} -j {output.json} \\
-                 >> {log.out} 2> {log.err}; then
-            echo "$LOG_HEADER - Fastp completed successfully: $(date)" >> {log.out}
+                 >> {log.out} 2>> {log.err}; then
+            echo "Fastp completed successfully: $(date)" >> {log.out}
         else
-            FASTP_EXIT=$?
-            echo "$LOG_HEADER - ERROR: Fastp failed with exit code $FASTP_EXIT: $(date)" >> {log.out}
-            
-            # Examine error log for specific issues
-            if grep -q "different read numbers" {log.err}; then
-                echo "$LOG_HEADER - ERROR: Read count mismatch detected in input files" >> {log.out}
-                echo "$LOG_HEADER - Error details from fastp:" >> {log.out}
-                grep -A 5 "different read numbers" {log.err} >> {log.out}
-            fi
-            
-            # Check if output files were at least partially created
-            if [[ -f {output.R1_trimmed} ]]; then
-                echo "$LOG_HEADER - R1 output was created but may be incomplete: $(du -h {output.R1_trimmed} | cut -f1)" >> {log.out}
-            fi
-            
-            if [[ -f {output.R2_trimmed} ]]; then
-                echo "$LOG_HEADER - R2 output was created but may be incomplete: $(du -h {output.R2_trimmed} | cut -f1)" >> {log.out}
-            fi
-            
-            # Propagate the error to trigger a retry
-            exit $FASTP_EXIT
-        fi
-        
-        # Validate output files
-        if [[ ! -s {output.R1_trimmed} ]]; then
-            echo "$LOG_HEADER - ERROR: R1 output file is empty after processing" >> {log.out}
+            echo "ERROR: Fastp failed with exit code $?" >> {log.out}
             exit 1
         fi
         
-        if [[ ! -s {output.R2_trimmed} ]]; then
-            echo "$LOG_HEADER - ERROR: R2 output file is empty after processing" >> {log.out}
+        # Validate outputs exist
+        if [[ ! -s {output.R1_trimmed} ]] || [[ ! -s {output.R2_trimmed} ]]; then
+            echo "ERROR: Output files are empty or missing" >> {log.out}
             exit 1
-        fi
-        
-        # Calculate and log read counts from output files
-        echo "$LOG_HEADER - Calculating read counts in output files..." >> {log.out}
-        R1_READS=$(($(wc -l < {output.R1_trimmed}) / 4))
-        R2_READS=$(($(wc -l < {output.R2_trimmed}) / 4))
-        echo "$LOG_HEADER - Read counts: R1=$R1_READS reads, R2=$R2_READS reads" >> {log.out}
-        
-        # Verify read counts match between R1 and R2
-        if [[ $R1_READS -ne $R2_READS ]]; then
-            echo "$LOG_HEADER - WARNING: Read count mismatch in output files (R1=$R1_READS, R2=$R2_READS)" >> {log.out}
-            # Not failing here since the files were created, but logging the issue
         fi
         
         # Clean headers
-        echo "$LOG_HEADER - Cleaning headers in output files" >> {log.out}
+        echo "Cleaning headers: $(date)" >> {log.out}
         perl -i -pe 's/ /_/g' {output.R1_trimmed}
         perl -i -pe 's/ /_/g' {output.R2_trimmed}
-        echo "$LOG_HEADER - Headers cleaned" >> {log.out}
         
-        # Log detailed output file information
-        echo "$LOG_HEADER - Output file details:" >> {log.out}
-        echo "  R1: $(du -h {output.R1_trimmed} | cut -f1) ($(stat -c%s {output.R1_trimmed}) bytes)" >> {log.out}
-        echo "  R2: $(du -h {output.R2_trimmed} | cut -f1) ($(stat -c%s {output.R2_trimmed}) bytes)" >> {log.out}
-        
-        # Log successful completion
-        echo "$LOG_HEADER - Processing completed successfully at $(date)" >> {log.out}
-        echo "$LOG_HEADER - ----------------------------------------" >> {log.out}
+        # Log output file sizes
+        echo "Output file sizes:" >> {log.out}
+        echo "  R1_trimmed: $(numfmt --to=iec $(stat -c%s {output.R1_trimmed}))" >> {log.out}
+        echo "  R2_trimmed: $(numfmt --to=iec $(stat -c%s {output.R2_trimmed}))" >> {log.out}
+        echo "Processing completed: $(date)" >> {log.out}
         """
 
 rule fastq_concat:
     input:
-        R1=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq"),
-        R2=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq")
+        R1=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq"),
+        R2=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq")
     output:
-        temp(os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq"))
+        temp(os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq"))
     log:
-        out=os.path.join(output_dir_concat, "logs/concat/{sample}.out")
+        out=os.path.join(preprocessing_dir_concat, "logs/concat/{sample}.out")
     threads: rule_resources["fastq_concat"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["fastq_concat"]["mem_mb"] * attempt
@@ -638,20 +699,19 @@ rule fastq_concat:
         (cat {input.R1} && cat {input.R2}) > {output} 2>> {log.out}
 
         echo "Completed: $(date)" >> {log.out}
-        echo "Output file size: $(du -h {output} | cut -f1)" >> {log.out}
+        echo "Output file size: $(numfmt --to=iec $(stat -c%s {output}))" >> {log.out}
         """
-
 
 rule gzip_trimmed:
     input:
-        R1=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq"),
-        R2=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq"),
-        concat=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq")
+        R1=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq"),
+        R2=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq"),
+        concat=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq")
     output:
-        R1_gz=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq.gz"),
-        R2_gz=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq.gz")
+        R1_gz=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R1_trimmed.fastq.gz"),
+        R2_gz=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_R2_trimmed.fastq.gz")
     log:
-        out=os.path.join(output_dir_concat, "logs/gzip/{sample}.out")
+        out=os.path.join(preprocessing_dir_concat, "logs/gzip/{sample}.out")
     threads: rule_resources["gzip_trimmed"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["gzip_trimmed"]["mem_mb"] * attempt
@@ -676,18 +736,18 @@ rule gzip_trimmed:
 
         echo "Compression completed: $(date)" >> {log.out}
         echo "Compressed file sizes:" >> {log.out}
-        echo "  R1: $(du -h {output.R1_gz} | cut -f1)" >> {log.out}
-        echo "  R2: $(du -h {output.R2_gz} | cut -f1)" >> {log.out}
+        echo "  R1: $(numfmt --to=iec $(stat -c%s {output.R1_gz}))" >> {log.out}
+        echo "  R2: $(numfmt --to=iec $(stat -c%s {output.R2_gz}))" >> {log.out}
         """
 
 rule aggregate_concat_logs:
     input:
-        sample_logs=expand(os.path.join(output_dir_concat, "logs/concat/{sample}.out"), sample=list(samples.keys()))
+        sample_logs=expand(os.path.join(preprocessing_dir_concat, "logs/concat/{sample}.out"), sample=list(samples.keys()))
     output:
-        combined_log=os.path.join(output_dir_concat, "logs/concat_reads.log")
+        combined_log=os.path.join(preprocessing_dir_concat, "logs/concat/concat_reads.log")
     log:
-        out=os.path.join(output_dir_concat, "logs/aggregate_concat.out"),
-        err=os.path.join(output_dir_concat, "logs/aggregate_concat.err")
+        out=os.path.join(preprocessing_dir_concat, "logs/concat/aggregate_concat.out"),
+        err=os.path.join(preprocessing_dir_concat, "logs/concat/aggregate_concat.err")
     threads: rule_resources["aggregate_concat_logs"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["aggregate_concat_logs"]["mem_mb"] * attempt
@@ -706,19 +766,18 @@ rule aggregate_concat_logs:
         echo "Aggregation complete." >> {log.out}
         """
 
-
 rule quality_trim:
     input:
-        os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq")
+        os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq")
     output:
-        temp(os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_concat_trimmed.fq")),
-        report=os.path.join(output_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq_trimming_report.txt")
+        temp(os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_concat_trimmed.fq")),
+        report=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}/{sample}_concat.fastq_trimming_report.txt")
     params:
-        outdir=os.path.join(output_dir_concat, "trimmed_data/{sample}"),
-        report_dir=os.path.join(output_dir_concat, "trimmed_data/")
+        outdir=os.path.join(preprocessing_dir_concat, "trimmed_data/{sample}"),
+        report_dir=os.path.join(preprocessing_dir_concat, "trimmed_data/")
     log:
-        out=os.path.join(output_dir_concat, "logs/trim_galore/{sample}.out"),
-        err=os.path.join(output_dir_concat, "logs/trim_galore/{sample}.err")
+        out=os.path.join(preprocessing_dir_concat, "logs/trim_galore/{sample}.out"),
+        err=os.path.join(preprocessing_dir_concat, "logs/trim_galore/{sample}.err")
     threads: rule_resources["quality_trim"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["quality_trim"]["mem_mb"] * attempt
@@ -738,22 +797,19 @@ rule quality_trim:
                     --basename {wildcards.sample}_concat \\
                     {input} >> {log.out} 2>> {log.err}
 
-        # Move reports to out location
-        #mv {params.outdir}/{wildcards.sample}_concat.fastq_trimming_report.txt {output.report} >> {log.out} 2>> {log.err}
-
         # Log job completion
         echo "Completed: $(date)" >> {log.out}
-        echo "Output file size: $(du -h {output[0]} | cut -f1)" >> {log.out}
+        echo "Output file size: $(numfmt --to=iec $(stat -c%s {output[0]}))" >> {log.out}
         """
 
 rule aggregate_trim_galore_logs:
     input:
-        sample_logs=expand(os.path.join(output_dir_concat, "logs/trim_galore/{sample}.out"), sample=list(samples.keys())) # Use .out
+        sample_logs=expand(os.path.join(preprocessing_dir_concat, "logs/trim_galore/{sample}.out"), sample=list(samples.keys()))
     output:
-        combined_log=os.path.join(output_dir_concat, "logs/trim_galore.log")
+        combined_log=os.path.join(preprocessing_dir_concat, "logs/trim_galore/trim_galore.log")
     log:
-        out=os.path.join(output_dir_concat, "logs/aggregate_trim_galore.out"),
-        err=os.path.join(output_dir_concat, "logs/aggregate_trim_galore.err")
+        out=os.path.join(preprocessing_dir_concat, "logs/aggregate_trim_galore.out"),
+        err=os.path.join(preprocessing_dir_concat, "logs/aggregate_trim_galore.err")
     threads: rule_resources["aggregate_trim_galore_logs"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["aggregate_trim_galore_logs"]["mem_mb"] * attempt
@@ -770,16 +826,8 @@ rule aggregate_trim_galore_logs:
         cat {input.sample_logs} >> {output.combined_log} 2>> {log.err}
         echo "Aggregation complete." >> {log.out}
         """
-
-# Helper function to get the right input for concat mode
-def get_mge_input_concat(wildcards):
-    return os.path.join(output_dir_concat, f"trimmed_data/{wildcards.sample}/{wildcards.sample}_concat_trimmed.fq")
-
-
-
-
-
-# ===== SHARED RULES WITH MODE-SPECIFIC VERSIONS =====
+		
+# ===== MGE RULES FOR BARCODE RECOVERY =====
 
 # MGE rule for merge mode
 rule MitoGeneExtractor_merge:
@@ -787,18 +835,18 @@ rule MitoGeneExtractor_merge:
         DNA=get_mge_input_merge,
         AA=get_protein_reference
     output:
-        alignment=os.path.join(output_dir_merge, "alignment/{sample}_r_{r}_s_{s}_align_{sample}.fas"),
-        consensus=os.path.join(output_dir_merge, "consensus/{sample}_r_{r}_s_{s}_con_{sample}.fas")
+        alignment=os.path.join(barcode_recovery_dir_merge, "alignment/{sample}_r_{r}_s_{s}_align_{sample}.fas"),
+        consensus=os.path.join(barcode_recovery_dir_merge, "consensus/{sample}_r_{r}_s_{s}_con_{sample}.fas")
     log:
-        out=os.path.join(output_dir_merge, "out/{sample}_r_{r}_s_{s}_summary.out"),
-        err=os.path.join(output_dir_merge, "err/{sample}_r_{r}_s_{s}_summary.err")
+        out=os.path.join(barcode_recovery_dir_merge, "out/{sample}_r_{r}_s_{s}_summary.out"),
+        err=os.path.join(barcode_recovery_dir_merge, "err/{sample}_r_{r}_s_{s}_summary.err")
     params:
         mge_executor=config["mge_path"],
         n=config["n"],
         C=config["C"],
-        t=config["t"],
-        output_dir=output_dir_merge,
-        vulgar_dir=lambda wildcards: os.path.join(output_dir_merge, f"logs/mge/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}/")
+        t=config["t"],		
+        output_dir=barcode_recovery_dir_merge,
+        vulgar_dir=lambda wildcards: os.path.join(barcode_recovery_dir_merge, f"logs/mge/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}/")
     threads: rule_resources["MitoGeneExtractor_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["MitoGeneExtractor_merge"]["mem_mb"] * attempt,
@@ -825,9 +873,6 @@ rule MitoGeneExtractor_merge:
             fi
             
             echo "Creating mock outputs..." >> {log.out}
-            
-            
-            # Mock outputs (consensus = header only)
             echo ">Consensus__{wildcards.sample}" > {output.consensus}
             touch {output.alignment}
             touch {log.err}
@@ -839,23 +884,31 @@ rule MitoGeneExtractor_merge:
         # Create vulgar directory if it doesn't exist
         mkdir -p {params.vulgar_dir}
         
-        # Normal execution path - input has content
+        # Job info and file analysis
         echo "===== Job Info =====" >> {log.out}
         echo "Started: $(date)" >> {log.out}
         echo "Node: $(hostname)" >> {log.out}
-        echo "Memory allocated: {resources.mem_mb}MB" >> {log.out}
+        echo "Memory allocated: $(({resources.mem_mb} / 1024))GB" >> {log.out}
         echo "Threads: {threads}" >> {log.out}
         echo "Mode: merge" >> {log.out}
-        echo "===================" >> {log.out}
+        echo "Sample: {wildcards.sample}" >> {log.out}
         
-        # Log input file details
-        echo "Input DNA file size: $(du -h {input.DNA} | cut -f1)" >> {log.out}
-        echo "Number of sequences: $(grep -c "^@" {input.DNA} || echo "0")" >> {log.out}
+        # Accurate file size analysis (using stat - the reliable method)
+        FILE_SIZE_BYTES=$(stat -c%s "{input.DNA}")
+        FILE_SIZE_GB=$(echo "scale=2; $FILE_SIZE_BYTES / 1024 / 1024 / 1024" | bc)
+        NUM_SEQUENCES=$(grep -c "^@" "{input.DNA}" || echo "0")
+        
+        echo "===== Input Files =====" >> {log.out}
+        echo "Input file: {input.DNA}" >> {log.out}
+        echo "File size: ${{FILE_SIZE_GB}}GB ($FILE_SIZE_BYTES bytes)" >> {log.out}
+        echo "Number of sequences: $NUM_SEQUENCES" >> {log.out}        
         echo "Input AA file: {input.AA}" >> {log.out}
-        echo "Available system memory before execution:" >> {log.out}
-        free -h >> {log.out}
-             
-        # Run MGE & track resource usage
+            
+        # Run MitoGeneExtractor
+        echo "===== Starting MitoGeneExtractor =====" >> {log.out}
+        echo "Command: {params.mge_executor} -q {input.DNA} -p {input.AA} -o {params.output_dir}/alignment/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}_align_ -c {params.output_dir}/consensus/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}_con_ -V {params.vulgar_dir} -r {wildcards.r} -s {wildcards.s} -n {params.n} -C {params.C} -t {params.t} --temporaryDirectory {params.output_dir} --verbosity 10" >> {log.out}
+        echo "=======================================" >> {log.out}
+        
         time {params.mge_executor} \\
         -q {input.DNA} -p {input.AA} \\
         -o {params.output_dir}/alignment/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}_align_ \\
@@ -869,27 +922,61 @@ rule MitoGeneExtractor_merge:
         --verbosity 10 \\
         >> {log.out} 2>> {log.err} || {{
             EXIT_CODE=$?
-            echo "MitoGeneExtractor failed with exit code $EXIT_CODE" >> {log.out}
-            echo "Available system memory after failure:" >> {log.out}
+            echo "===== MitoGeneExtractor Failed =====" >> {log.out}
+            echo "Exit code: $EXIT_CODE" >> {log.out}
+            echo "Finished: $(date)" >> {log.out}
+            
+            # Enhanced failure analysis
+            if [ $EXIT_CODE -eq 137 ]; then
+                echo "ANALYSIS: Process killed (likely out of memory)" >> {log.out}
+                echo "  Current allocation: $(({resources.mem_mb} / 1024))GB" >> {log.out}
+                echo "  File size: ${{FILE_SIZE_GB}}GB" >> {log.out}
+                echo "  Sequences processed: $NUM_SEQUENCES" >> {log.out}
+            elif [ $EXIT_CODE -eq 124 ]; then
+                echo "ANALYSIS: Process timed out" >> {log.out}
+            elif [ $EXIT_CODE -eq 1 ]; then
+                echo "ANALYSIS: General error - check error log for details" >> {log.out}
+            else
+                echo "ANALYSIS: Unknown failure (exit code $EXIT_CODE)" >> {log.out}
+            fi
+            
+            echo "Final system state:" >> {log.out}
             free -h >> {log.out}
-            echo "System load:" >> {log.out}
-            uptime >> {log.out}
-            echo "Top memory processes:" >> {log.out}
-            ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%mem | head -n 10 >> {log.out}
+            echo "===================================" >> {log.out}
+            
             exit $EXIT_CODE
         }}
 
-        echo "Job completed successfully: $(date)" >> {log.out}
-        echo "Available system memory after execution:" >> {log.out}
+        echo "===== Job Completed Successfully =====" >> {log.out}
+        echo "Finished: $(date)" >> {log.out}
+        echo "Final memory usage:" >> {log.out}
         free -h >> {log.out}
         
-        echo "Output file sizes:" >> {log.out}
+        # Validate and report output files
         if [ -f "{output.consensus}" ] && [ -f "{output.alignment}" ]; then
-            du -h {output.consensus} {output.alignment} >> {log.out}
+            CONSENSUS_SIZE=$(stat -c%s {output.consensus})
+            ALIGNMENT_SIZE=$(stat -c%s {output.alignment})
+            CONSENSUS_LINES=$(wc -l < {output.consensus})
+            
+            echo "===== Output Summary =====" >> {log.out}
+            echo "Consensus file: $(numfmt --to=iec $CONSENSUS_SIZE) ($CONSENSUS_LINES lines)" >> {log.out}
+            echo "Alignment file: $(numfmt --to=iec $ALIGNMENT_SIZE)" >> {log.out}
+            
+            if [ $CONSENSUS_LINES -gt 1 ]; then
+                echo "✓ Consensus contains sequence data" >> {log.out}
+            else
+                echo "⚠ WARNING: Consensus may be header-only" >> {log.out}
+            fi
+            echo "===========================" >> {log.out}
         else
-            echo "Warning: Output files not found. Check for errors." >> {log.out}
+            echo "ERROR: Expected output files not found" >> {log.out}
+            echo "Expected files:" >> {log.out}
+            echo "  Consensus: {output.consensus}" >> {log.out}
+            echo "  Alignment: {output.alignment}" >> {log.out}
+            exit 1
         fi
         """
+
 
 # MGE rule for concat mode
 rule MitoGeneExtractor_concat:
@@ -897,18 +984,18 @@ rule MitoGeneExtractor_concat:
         DNA=get_mge_input_concat,
         AA=get_protein_reference
     output:
-        alignment=os.path.join(output_dir_concat, "alignment/{sample}_r_{r}_s_{s}_align_{sample}.fas"),
-        consensus=os.path.join(output_dir_concat, "consensus/{sample}_r_{r}_s_{s}_con_{sample}.fas")
+        alignment=os.path.join(barcode_recovery_dir_concat, "alignment/{sample}_r_{r}_s_{s}_align_{sample}.fas"),
+        consensus=os.path.join(barcode_recovery_dir_concat, "consensus/{sample}_r_{r}_s_{s}_con_{sample}.fas")
     log:
-        out=os.path.join(output_dir_concat, "out/{sample}_r_{r}_s_{s}_summary.out"),
-        err=os.path.join(output_dir_concat, "err/{sample}_r_{r}_s_{s}_summary.err")
+        out=os.path.join(barcode_recovery_dir_concat, "out/{sample}_r_{r}_s_{s}_summary.out"),
+        err=os.path.join(barcode_recovery_dir_concat, "err/{sample}_r_{r}_s_{s}_summary.err")
     params:
         mge_executor=config["mge_path"],
         n=config["n"],
         C=config["C"],
         t=config["t"],		
-        output_dir=output_dir_concat,
-        vulgar_dir=lambda wildcards: os.path.join(output_dir_concat, f"logs/mge/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}/")
+        output_dir=barcode_recovery_dir_concat,
+        vulgar_dir=lambda wildcards: os.path.join(barcode_recovery_dir_concat, f"logs/mge/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}/")
     threads: rule_resources["MitoGeneExtractor_concat"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["MitoGeneExtractor_concat"]["mem_mb"] * attempt,
@@ -935,8 +1022,6 @@ rule MitoGeneExtractor_concat:
             fi
             
             echo "Creating mock outputs..." >> {log.out}
-
-            # Mock outputs (consensus = header only)
             echo ">Consensus__{wildcards.sample}" > {output.consensus}
             touch {output.alignment}
             touch {log.err}
@@ -948,23 +1033,31 @@ rule MitoGeneExtractor_concat:
         # Create vulgar directory if it doesn't exist
         mkdir -p {params.vulgar_dir}
         
-        # Normal execution path - input has content
+        # Job info and file analysis
         echo "===== Job Info =====" >> {log.out}
         echo "Started: $(date)" >> {log.out}
         echo "Node: $(hostname)" >> {log.out}
-        echo "Memory allocated: {resources.mem_mb}MB" >> {log.out}
+        echo "Memory allocated: $(({resources.mem_mb} / 1024))GB" >> {log.out}
         echo "Threads: {threads}" >> {log.out}
         echo "Mode: concat" >> {log.out}
-        echo "===================" >> {log.out}
+        echo "Sample: {wildcards.sample}" >> {log.out}
         
-        # Log input file details
-        echo "Input DNA file size: $(du -h {input.DNA} | cut -f1)" >> {log.out}
-        echo "Number of sequences: $(grep -c "^@" {input.DNA} || echo "0")" >> {log.out}
+        # Accurate file size analysis (using stat - the reliable method)
+        FILE_SIZE_BYTES=$(stat -c%s "{input.DNA}")
+        FILE_SIZE_GB=$(echo "scale=2; $FILE_SIZE_BYTES / 1024 / 1024 / 1024" | bc)
+        NUM_SEQUENCES=$(grep -c "^@" "{input.DNA}" || echo "0")
+        
+        echo "===== Input Files =====" >> {log.out}
+        echo "Input file: {input.DNA}" >> {log.out}
+        echo "File size: ${{FILE_SIZE_GB}}GB ($FILE_SIZE_BYTES bytes)" >> {log.out}
+        echo "Number of sequences: $NUM_SEQUENCES" >> {log.out}        
         echo "Input AA file: {input.AA}" >> {log.out}
-        echo "Available system memory before execution:" >> {log.out}
-        free -h >> {log.out}
             
-        # Run MGE & track resource usage
+        # Run MitoGeneExtractor
+        echo "===== Starting MitoGeneExtractor =====" >> {log.out}
+        echo "Command: {params.mge_executor} -q {input.DNA} -p {input.AA} -o {params.output_dir}/alignment/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}_align_ -c {params.output_dir}/consensus/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}_con_ -V {params.vulgar_dir} -r {wildcards.r} -s {wildcards.s} -n {params.n} -C {params.C} -t {params.t} --temporaryDirectory {params.output_dir} --verbosity 10" >> {log.out}
+        echo "=======================================" >> {log.out}
+        
         time {params.mge_executor} \\
         -q {input.DNA} -p {input.AA} \\
         -o {params.output_dir}/alignment/{wildcards.sample}_r_{wildcards.r}_s_{wildcards.s}_align_ \\
@@ -978,39 +1071,72 @@ rule MitoGeneExtractor_concat:
         --verbosity 10 \\
         >> {log.out} 2>> {log.err} || {{
             EXIT_CODE=$?
-            echo "MitoGeneExtractor failed with exit code $EXIT_CODE" >> {log.out}
-            echo "Available system memory after failure:" >> {log.out}
+            echo "===== MitoGeneExtractor Failed =====" >> {log.out}
+            echo "Exit code: $EXIT_CODE" >> {log.out}
+            echo "Finished: $(date)" >> {log.out}
+            
+            # Enhanced failure analysis
+            if [ $EXIT_CODE -eq 137 ]; then
+                echo "ANALYSIS: Process killed (likely out of memory)" >> {log.out}
+                echo "  Current allocation: $(({resources.mem_mb} / 1024))GB" >> {log.out}
+                echo "  File size: ${{FILE_SIZE_GB}}GB" >> {log.out}
+                echo "  Sequences processed: $NUM_SEQUENCES" >> {log.out}
+            elif [ $EXIT_CODE -eq 124 ]; then
+                echo "ANALYSIS: Process timed out" >> {log.out}
+            elif [ $EXIT_CODE -eq 1 ]; then
+                echo "ANALYSIS: General error - check error log for details" >> {log.out}
+            else
+                echo "ANALYSIS: Unknown failure (exit code $EXIT_CODE)" >> {log.out}
+            fi
+            
+            echo "Final system state:" >> {log.out}
             free -h >> {log.out}
-            echo "System load:" >> {log.out}
-            uptime >> {log.out}
+            echo "===================================" >> {log.out}
+            
             exit $EXIT_CODE
         }}
-        
-        echo "Job completed successfully: $(date)" >> {log.out}
-        echo "Available system memory after execution:" >> {log.out}
+
+        echo "===== Job Completed Successfully =====" >> {log.out}
+        echo "Finished: $(date)" >> {log.out}
+        echo "Final memory usage:" >> {log.out}
         free -h >> {log.out}
         
-        echo "Output file sizes:" >> {log.out}
+        # Validate and report output files
         if [ -f "{output.consensus}" ] && [ -f "{output.alignment}" ]; then
-            du -h {output.consensus} {output.alignment} >> {log.out}
+            CONSENSUS_SIZE=$(stat -c%s {output.consensus})
+            ALIGNMENT_SIZE=$(stat -c%s {output.alignment})
+            CONSENSUS_LINES=$(wc -l < {output.consensus})
+            
+            echo "===== Output Summary =====" >> {log.out}
+            echo "Consensus file: $(numfmt --to=iec $CONSENSUS_SIZE) ($CONSENSUS_LINES lines)" >> {log.out}
+            echo "Alignment file: $(numfmt --to=iec $ALIGNMENT_SIZE)" >> {log.out}
+            
+            if [ $CONSENSUS_LINES -gt 1 ]; then
+                echo "✓ Consensus contains sequence data" >> {log.out}
+            else
+                echo "⚠ WARNING: Consensus may be header-only" >> {log.out}
+            fi
+            echo "===========================" >> {log.out}
         else
-            echo "Warning: Output files not found. Check for errors." >> {log.out}
+            echo "ERROR: Expected output files not found" >> {log.out}
+            echo "Expected files:" >> {log.out}
+            echo "  Consensus: {output.consensus}" >> {log.out}
+            echo "  Alignment: {output.alignment}" >> {log.out}
+            exit 1
         fi
         """
-
-
-
-
+		
+# ===== CONSENSUS COMBINATION AND LOG RULES =====
 
 # Rename headers in consensus files for merge mode
 rule rename_and_combine_cons_merge:
     input:
         consensus_files=get_all_mge_consensus_files("merge")
     output:
-        complete=os.path.join(output_dir_merge, "logs/rename_complete.txt"),
-        concat_cons=os.path.join(output_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta")
+        complete=os.path.join(barcode_recovery_dir_merge, "logs/rename_consensus/rename_complete.txt"),
+        concat_cons=os.path.join(barcode_recovery_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta")
     log:
-        os.path.join(output_dir_merge, "logs/rename_fasta.log")
+        os.path.join(barcode_recovery_dir_merge, "logs/rename_consensus/rename_fasta.log")
     params:
         script=os.path.join(workflow.basedir, "scripts/rename_headers.py"),
         preprocessing_mode="merge"
@@ -1049,12 +1175,12 @@ rule rename_and_combine_cons_merge:
 # Rename headers in consensus files for concat mode
 rule rename_and_combine_cons_concat:
     input:
-        consensus_files=get_all_mge_consensus_files("merge")
+        consensus_files=get_all_mge_consensus_files("concat")
     output:
-        complete=os.path.join(output_dir_concat, "logs/rename_complete.txt"),
-        concat_cons=os.path.join(output_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta")
+        complete=os.path.join(barcode_recovery_dir_concat, "logs/rename_consensus/rename_complete.txt"),
+        concat_cons=os.path.join(barcode_recovery_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta")
     log:
-        os.path.join(output_dir_concat, "logs/rename_fasta.log")
+        os.path.join(barcode_recovery_dir_concat, "logs/rename_consensus/rename_fasta.log")
     params:
         script=os.path.join(workflow.basedir, "scripts/rename_headers.py"),
         preprocessing_mode="concat"
@@ -1089,18 +1215,16 @@ rule rename_and_combine_cons_concat:
         touch {output.complete}
         """
 
-
-
 # Remove exonerate intermediate files after consensus generation
 rule remove_exonerate_intermediates:
     input:
-        merge_consensus=os.path.join(output_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
-        concat_consensus=os.path.join(output_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
-        merge_rename_complete=os.path.join(output_dir_merge, "logs/rename_complete.txt"),
-        concat_rename_complete=os.path.join(output_dir_concat, "logs/rename_complete.txt")
+        merge_consensus=os.path.join(barcode_recovery_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
+        concat_consensus=os.path.join(barcode_recovery_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
+        merge_rename_complete=os.path.join(barcode_recovery_dir_merge, "logs/rename_consensus/rename_complete.txt"),
+        concat_rename_complete=os.path.join(barcode_recovery_dir_concat, "logs/rename_consensus/rename_complete.txt")
     output:
-        merge_completion=os.path.join(output_dir_merge, "logs/exonerate_cleanup_complete.txt"),
-        concat_completion=os.path.join(output_dir_concat, "logs/exonerate_cleanup_complete.txt")
+        merge_completion=os.path.join(barcode_recovery_dir_merge, "logs/exonerate_int_cleanup_complete.txt"),
+        concat_completion=os.path.join(barcode_recovery_dir_concat, "logs/exonerate_int_cleanup_complete.txt")
     threads: rule_resources["remove_exonerate_intermediates"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["remove_exonerate_intermediates"]["mem_mb"] * attempt
@@ -1108,8 +1232,8 @@ rule remove_exonerate_intermediates:
     run:     
         # Clean each mode directory and write separate completion files
         for mode_dir, mode_name, completion_file in [
-            (output_dir_merge, "merge", output.merge_completion),
-            (output_dir_concat, "concat", output.concat_completion)
+            (barcode_recovery_dir_merge, "merge", output.merge_completion),
+            (barcode_recovery_dir_concat, "concat", output.concat_completion)
         ]:
             removed_files = 0
             total_size_saved = 0
@@ -1147,15 +1271,13 @@ rule remove_exonerate_intermediates:
                 log.write(f"  Total disk space saved: {total_saved_mb:.2f} MB\n")
                 log.write(f"  Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 			
-			
-
 # Create list of alignment files for stats for merge mode
 rule create_alignment_log_merge:
     input:
-        alignment_files=lambda wildcards: glob.glob(os.path.join(output_dir_merge, "alignment/*_align_*.fas")),
-        concat_cons=os.path.join(output_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta")
+        alignment_files=lambda wildcards: glob.glob(os.path.join(barcode_recovery_dir_merge, "alignment/*_align_*.fas")),
+        concat_cons=os.path.join(barcode_recovery_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta")
     output:
-        alignment_log=os.path.join(output_dir_merge, "logs/mge/alignment_files.log")
+        alignment_log=os.path.join(barcode_recovery_dir_merge, "logs/mge/alignment_files.log")
     threads: rule_resources["create_alignment_log_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["create_alignment_log_merge"]["mem_mb"] * attempt
@@ -1170,10 +1292,10 @@ rule create_alignment_log_merge:
 # Create list of alignment files for stats for concat mode
 rule create_alignment_log_concat:
     input:
-        alignment_files=lambda wildcards: glob.glob(os.path.join(output_dir_concat, "alignment/*_align_*.fas")),
-        concat_cons=os.path.join(output_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta")
+        alignment_files=lambda wildcards: glob.glob(os.path.join(barcode_recovery_dir_concat, "alignment/*_align_*.fas")),
+        concat_cons=os.path.join(barcode_recovery_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta")
     output:
-        alignment_log=os.path.join(output_dir_concat, "logs/mge/alignment_files.log")
+        alignment_log=os.path.join(barcode_recovery_dir_concat, "logs/mge/alignment_files.log")
     threads: rule_resources["create_alignment_log_concat"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["create_alignment_log_concat"]["mem_mb"] * attempt
@@ -1184,29 +1306,492 @@ rule create_alignment_log_concat:
         with open(output.alignment_log, 'w') as log_file:
             for file in alignment_files:
                 log_file.write(f"{file}\n")
+				
+#!/usr/bin/env python3
+"""
+BLAST Results Processor
+
+Processes BLAST TSV files (outfmt 6) to extract top hits per query sequence.
+For each query sequence, sorts hits by pident (desc), length (desc), evalue (asc)
+and keeps the top N hits (default: 20).
+
+Also generates text files listing contigs (qseqids) that match expected taxonomic families
+based on a user-provided taxonomy CSV file.
+
+- Handles standard BLAST outputs with/without headers
+- Extracts and outputs top hits based on percent identity, alignment length, and e-value
+- Recursively searches for .tsv files in input directory and subdirectories
+- Groups files by prefix and suffix types
+- Uses taxonomy CSV file to determine expected families for each sample
+- Always generates contig lists for family matches
+
+Example:
+    python blast_processor.py --input_dir /path/to/blast_files --taxonomy_csv taxonomy.csv -o output_dir -n 20
+
+Taxonomy CSV format:
+    The CSV file must contain 'ID' and 'family' columns:
+    - ID: identifier that matches part of the .tsv filename
+    - family: expected taxonomic family for that sample
+    - Other columns are ignored
+
+Output:
+- Individual parsed files: *_parsed_blast_output.tsv
+- Contig lists: contig_lists/*_expected_family_contigs.txt
+- Log file: blast_processor_YYYYMMDD_HHMMSS.log
+"""
+
+import os
+import pandas as pd
+import argparse
+from pathlib import Path
+from collections import defaultdict
+import re
+import logging
+from datetime import datetime
+
+
+def setup_logging(log_file):
+    """
+    Set up logging to both console and file.
+    """
+    # Ensure the log file's directory exists
+    log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    # Set up root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Remove any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    return logger
+
+
+def log_and_print(message, level='info'):
+    """
+    Log a message and print it to console.
+    """
+    logger = logging.getLogger()
+    if level == 'info':
+        logger.info(message)
+    elif level == 'error':
+        logger.error(message)
+    elif level == 'warning':
+        logger.warning(message)
+
+
+def detect_blast_format(input_file):
+    """
+    Detect if BLAST file has headers and determine the format.
+    
+    Returns:
+        tuple: (has_header, column_names)
+    """
+    # Standard BLAST outfmt 6 column names
+    standard_blast_columns = [
+        'qseqid', 'sseqid', 'pident', 'length', 'mismatch', 'gapopen',
+        'qstart', 'qend', 'sstart', 'send', 'evalue', 'bitscore'
+    ]
+    
+    try:
+        with open(input_file, 'r') as f:
+            first_line = f.readline().strip()
+            
+            # Check if first line looks like a header
+            if first_line.startswith('#'):
+                # Comment line, skip and check next
+                first_line = f.readline().strip()
+            
+            # Split the first line and check if it matches expected column names
+            columns = first_line.split('\t')
+            
+            # Check if first line contains column names (case-insensitive)
+            blast_col_lower = [col.lower() for col in standard_blast_columns]
+            first_line_lower = [col.lower() for col in columns]
+            
+            # If the first line matches BLAST column names, it's a header
+            if (len(columns) >= 12 and 
+                all(col in blast_col_lower for col in first_line_lower[:12])):
+                log_and_print(f"  -> Detected header in file: {first_line}")
+                return True, columns[:12]  # Use the actual column names from file
+            else:
+                # No header detected, use standard names
+                return False, standard_blast_columns
+                
+    except Exception as e:
+        log_and_print(f"Warning: Could not detect format for {input_file}: {e}", level='warning')
+        return False, standard_blast_columns
+
+
+def extract_family_from_taxonomy(sseqid):
+    """
+    Extract family from taxonomic string in sseqid.
+    
+    Example: 'Chlorophyllum_brunneum|AY083206|SH1370438.10FU|refs|k__Fungi;p__Basidiomycota;c__Agaricomycetes;o__Agaricales;f__Agaricaceae;g__Chlorophyllum;s__Chlorophyllum_brunneum'
+    Returns: 'Agaricaceae'
+    """
+    if ';f__' in sseqid:
+        # Find the family part
+        family_part = sseqid.split(';f__')[1].split(';')[0]
+        return family_part
+    return None
+
+
+def load_taxonomy_mapping(taxonomy_csv):
+    """
+    Load taxonomy mapping from CSV file.
+    
+    Args:
+        taxonomy_csv (str): Path to CSV file with ID and family columns
+    
+    Returns:
+        dict: Mapping of ID to family
+    """
+    try:
+        df = pd.read_csv(taxonomy_csv)
+        
+        # Check required columns
+        if 'ID' not in df.columns or 'family' not in df.columns:
+            raise ValueError("CSV file must contain 'ID' and 'family' columns")
+        
+        # Create mapping dictionary
+        mapping = dict(zip(df['ID'], df['family']))
+        
+        log_and_print(f"Loaded taxonomy mapping for {len(mapping)} IDs from {taxonomy_csv}")
+        return mapping
+        
+    except Exception as e:
+        log_and_print(f"Error loading taxonomy CSV {taxonomy_csv}: {e}", level='error')
+        raise
+
+
+def get_expected_family_from_filename(filename, taxonomy_mapping):
+    """
+    Get expected family for a filename based on taxonomy mapping.
+    
+    Args:
+        filename (str): The .tsv filename
+        taxonomy_mapping (dict): Mapping of ID to family
+    
+    Returns:
+        tuple: (expected_family, matched_id) or (None, None) if no match
+    """
+    filename_base = Path(filename).name
+    
+    # Try to match each ID in the mapping against the filename
+    for sample_id, family in taxonomy_mapping.items():
+        if str(sample_id) in filename_base:
+            return family, sample_id
+    
+    return None, None
+
+
+def create_contig_lists(output_dir, taxonomy_mapping):
+    """
+    Create text files listing contigs (qseqids) that contain the expected family.
+    """
+    log_and_print("\nCreating contig lists for expected families...")
+    
+    # Create contig_lists directory
+    contig_dir = Path(output_dir) / 'contig_lists'
+    contig_dir.mkdir(exist_ok=True)
+    
+    # Find all parsed output files
+    parsed_files = list(Path(output_dir).glob("*_parsed_blast_output.tsv"))
+    
+    if not parsed_files:
+        log_and_print("No parsed BLAST output files found. Skipping contig list creation.", level='warning')
+        return
+    
+    processed_count = 0
+    skipped_count = 0
+    
+    for parsed_file in sorted(parsed_files):
+        # Extract original filename to get expected family
+        original_name = parsed_file.stem.replace('_parsed_blast_output', '') + '.tsv'
+        expected_family, matched_id = get_expected_family_from_filename(original_name, taxonomy_mapping)
+        
+        if not expected_family:
+            log_and_print(f"  Warning: No taxonomy mapping found for file {original_name} - skipping contig list creation", level='warning')
+            skipped_count += 1
+            continue
+        
+        log_and_print(f"  Processing {parsed_file.name}...")
+        log_and_print(f"    -> Matched ID: {matched_id}")
+        log_and_print(f"    -> Expected family: {expected_family}")
+        
+        # Read the parsed BLAST file
+        try:
+            df = pd.read_csv(parsed_file, sep='\t')
+            
+            # Find contigs with hits matching the expected family
+            matching_contigs = set()
+            
+            for _, row in df.iterrows():
+                qseqid = row['qseqid']
+                sseqid = row['sseqid']
+                family = extract_family_from_taxonomy(sseqid)
+                
+                if family == expected_family:
+                    matching_contigs.add(qseqid)
+            
+            # Create output filename
+            base_name = parsed_file.stem.replace('_parsed_blast_output', '')
+            contig_list_file = contig_dir / f"{base_name}_expected_family_contigs.txt"
+            
+            # Write contig list to file
+            with open(contig_list_file, 'w') as f:
+                # Write header with metadata
+                f.write(f"# Contigs with hits matching expected family: {expected_family}\n")
+                f.write(f"# Source file: {original_name}\n")
+                f.write(f"# Matched taxonomy ID: {matched_id}\n")
+                f.write(f"# Total contigs with expected family hits: {len(matching_contigs)}\n")
+                f.write(f"# Total unique queries in file: {df['qseqid'].nunique()}\n")
+                f.write("#\n")
+                
+                # Write contig IDs (sorted for consistency)
+                for contig in sorted(matching_contigs):
+                    f.write(f"{contig}\n")
+            
+            log_and_print(f"    -> Found {len(matching_contigs)} contigs with expected family")
+            log_and_print(f"    -> Saved to: {contig_list_file}")
+            processed_count += 1
+            
+        except Exception as e:
+            log_and_print(f"    -> Error processing {parsed_file}: {e}", level='error')
+    
+    log_and_print(f"  Created contig lists for {processed_count} files in: {contig_dir}")
+    if skipped_count > 0:
+        log_and_print(f"  Skipped {skipped_count} files due to missing taxonomy mappings")
 
 
 
 
+def process_blast_file(input_file, output_dir, top_n=20):
+    """
+    Process a single BLAST TSV file.
+    
+    Args:
+        input_file (str): Path to input BLAST TSV file
+        output_dir (str): Directory to save processed output
+        top_n (int): Number of top hits to keep per query sequence
+    """
+    try:
+        # Detect file format
+        log_and_print(f"Processing {input_file}...")
+        has_header, column_names = detect_blast_format(input_file)
+        
+        # Read the BLAST results
+        if has_header:
+            df = pd.read_csv(input_file, sep='\t', header=0)
+            log_and_print(f"  -> Reading file with headers")
+        else:
+            df = pd.read_csv(input_file, sep='\t', header=None, names=column_names)
+            log_and_print(f"  -> Reading file without headers")
+        
+        # Ensure we have the minimum required columns
+        required_columns = ['qseqid', 'sseqid', 'pident', 'length', 'evalue']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            log_and_print(f"Error: Missing required columns {missing_columns} in {input_file}", level='error')
+            return 0, 0
+        
+        # Sort by qseqid first, then by our ranking criteria
+        # pident (desc), length (desc), evalue (asc)
+        df_sorted = df.sort_values([
+            'qseqid',           # Group by query sequence
+            'pident',           # Higher percent identity is better
+            'length',           # Longer alignments are better
+            'evalue'            # Lower e-value is better
+        ], ascending=[True, False, False, True])
+        
+        # Group by qseqid and take top N hits for each
+        top_hits = df_sorted.groupby('qseqid').head(top_n)
+        
+        # Select only the columns we want in the output
+        output_columns = ['qseqid', 'sseqid', 'pident', 'length', 'evalue']
+        result = top_hits[output_columns]
+        
+        # Generate output filename with "_parsed_blast_output" suffix
+        input_name = Path(input_file).stem
+        output_file = Path(output_dir) / f"{input_name}_parsed_blast_output.tsv"
+        
+        # Save the results with column headers
+        result.to_csv(output_file, sep='\t', index=False)
+        
+        log_and_print(f"  -> Saved {len(result)} hits from {df['qseqid'].nunique()} queries to {output_file}")
+        
+        return len(result), df['qseqid'].nunique()
+        
+    except Exception as e:
+        log_and_print(f"Error processing {input_file}: {e}", level='error')
+        return 0, 0
 
 
+def main():
+    parser = argparse.ArgumentParser(description='Process BLAST TSV files to extract top hits per query')
+    parser.add_argument('--input_dir', required=True, help='Directory containing BLAST TSV files (required)')
+    parser.add_argument('--taxonomy_csv', required=True,
+                       help='CSV file with ID and family columns for taxonomy mapping (required)')
+    parser.add_argument('-o', '--output_dir', default='parsed_blast_output', 
+                       help='Output directory (default: parsed_blast_output)')
+    parser.add_argument('-n', '--top_n', type=int, default=20,
+                       help='Number of top hits to keep per query (default: 20)')
+    parser.add_argument('--log_file', default=None,
+                       help='Log file path (default: blast_processor_YYYYMMDD_HHMMSS.log)')
+    
+    args = parser.parse_args()
+    
+    # Set up log file with timestamp if not provided
+    if args.log_file is None:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        args.log_file = f'blast_processor_{timestamp}.log'
+    
+    # Set up logging
+    logger = setup_logging(args.log_file)
+    
+    # Load taxonomy mapping
+    try:
+        taxonomy_mapping = load_taxonomy_mapping(args.taxonomy_csv)
+    except Exception:
+        log_and_print("Failed to load taxonomy CSV. Exiting.", level='error')
+        return
+    
+    # Create output directory if it doesn't exist
+    output_dir = Path(args.output_dir)
+    
+    # Check if output_dir exists as a file (not directory) and handle it
+    if output_dir.exists() and not output_dir.is_dir():
+        log_and_print(f"Warning: '{output_dir}' exists as a file, not a directory. Removing file and creating directory.", level='warning')
+        output_dir.unlink()  # Remove the file
+    
+    output_dir.mkdir(exist_ok=True)
+    
+    # Find all BLAST TSV files recursively
+    input_dir = Path(args.input_dir)
+    tsv_files = list(input_dir.rglob('*.tsv'))
+    
+    if not tsv_files:
+        log_and_print(f"No TSV files found in {input_dir} or its subdirectories", level='error')
+        return
+    
+    log_and_print(f"BLAST Results Processor Started")
+    log_and_print(f"Input directory: {input_dir}")
+    log_and_print(f"Output directory: {output_dir}")
+    log_and_print(f"Taxonomy CSV: {args.taxonomy_csv}")
+    log_and_print(f"Log file: {args.log_file}")
+    log_and_print(f"Found {len(tsv_files)} TSV files to process (searched recursively)")
+    log_and_print(f"Keeping top {args.top_n} hits per query sequence")
+    log_and_print(f"Auto-detecting files with/without headers")
+    log_and_print(f"Contig lists will be created for all processed files")
+    log_and_print("-" * 60)
+    
+    total_hits = 0
+    total_queries = 0
+    processed_files = 0
+    file_results = []  # Store individual file results
+    
+    # Process each file
+    for tsv_file in sorted(tsv_files):
+        # Get taxonomy info for this file
+        expected_family, matched_id = get_expected_family_from_filename(tsv_file.name, taxonomy_mapping)
+        
+        hits, queries = process_blast_file(tsv_file, output_dir, args.top_n)
+        
+        total_hits += hits
+        total_queries += queries
+        
+        if hits > 0:
+            processed_files += 1
+        
+        # Store individual file result
+        file_results.append({
+            'filename': tsv_file.name,
+            'matched_id': matched_id,
+            'expected_family': expected_family,
+            'hits': hits,
+            'queries': queries,
+            'processed': hits > 0
+        })
+    
+    log_and_print("-" * 60)
+    log_and_print(f"Processing complete!")
+    log_and_print(f"Files processed: {processed_files}/{len(tsv_files)}")
+    log_and_print(f"Total queries processed: {total_queries}")
+    log_and_print(f"Total hits extracted: {total_hits}")
+    
+    # Print individual file results
+    log_and_print("\n" + "=" * 60)
+    log_and_print("PROCESSING RESULTS BY TAXONOMY ID:")
+    log_and_print("=" * 60)
+    
+    # Group results by matched vs unmatched
+    matched_files = [r for r in file_results if r['matched_id'] is not None]
+    unmatched_files = [r for r in file_results if r['matched_id'] is None]
+    
+    # Show matched files
+    for result in matched_files:
+        status = "✓" if result['processed'] else "✗"
+        log_and_print(f"\n{result['matched_id']} {status}")
+        log_and_print(f"  File: {result['filename']}")
+        log_and_print(f"  Expected family: {result['expected_family']}")
+        log_and_print(f"  Queries processed: {result['queries']}")
+        log_and_print(f"  Hits extracted: {result['hits']}")
+    
+    # Show unmatched files
+    if unmatched_files:
+        log_and_print(f"\nUnmatched Files:")
+        for result in unmatched_files:
+            status = "✓" if result['processed'] else "✗"
+            log_and_print(f"  {result['filename']} {status} - No taxonomy mapping found")
+            if result['processed']:
+                log_and_print(f"    Queries processed: {result['queries']}, Hits extracted: {result['hits']}")
+    
+    # Create contig lists (always enabled)
+    log_and_print("\n" + "=" * 60)
+    log_and_print("CREATING CONTIG LISTS:")
+    log_and_print("=" * 60)
+    create_contig_lists(output_dir, taxonomy_mapping)
+    
+    log_and_print(f"\nLog saved to: {args.log_file}")
 
 
-
+if __name__ == "__main__":
+    main()
+	
+# ===== FASTA CLEANER RULES - MERGE MODE =====
 
 # Sequential filtering rules (fasta_cleaner)
 rule human_cox1_filter_merge:
     input:
-        alignment_log=os.path.join(output_dir_merge, "logs/mge/alignment_files.log")
+        alignment_log=os.path.join(barcode_recovery_dir_merge, "logs/mge/alignment_files.log")
     output:
-        filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
-        metrics=os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv")
+        filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
+        metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/01_human_cox1_filter.py"),
-        output_dir=os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered"),
+        output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered"),
         human_threshold=fasta_cleaner_params["human_threshold"]
     log:
-        os.path.join(output_dir_merge, "logs/fasta_cleaner/01_human_filter.log")
+        os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/01_human_filter.log")
     threads: rule_resources["human_cox1_filter_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["human_cox1_filter_merge"]["mem_mb"] * attempt
@@ -1229,18 +1814,18 @@ rule human_cox1_filter_merge:
 
 rule at_content_filter_merge:
     input:
-        human_filtered=os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered/human_filtered.txt")
+        human_filtered=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered/human_filtered.txt")
     output:
-        filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
-        summary_metrics=os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv")
+        filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
+        summary_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/02_at_content_filter.py"),
-        output_dir=os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered"),
+        output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered"),
         at_threshold=fasta_cleaner_params["at_difference"],
         at_mode=fasta_cleaner_params["at_mode"],
         consensus_threshold=fasta_cleaner_params["consensus_threshold"]
     log:
-        os.path.join(output_dir_merge, "logs/fasta_cleaner/02_at_filter.log")
+        os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/02_at_filter.log")
     threads: rule_resources["at_content_filter_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["at_content_filter_merge"]["mem_mb"] * attempt
@@ -1264,18 +1849,18 @@ rule at_content_filter_merge:
 
 rule statistical_outlier_filter_merge:
     input:
-        filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered/at_filtered.txt")
+        filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered/at_filtered.txt")
     output:
-        filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
-        summary_metrics=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
-        individual_metrics=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv")
+        filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
+        summary_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
+        individual_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/03_statistical_outlier_filter.py"),
-        output_dir=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered"),
+        output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered"),
         outlier_percentile=fasta_cleaner_params["outlier_percentile"],
         consensus_threshold=fasta_cleaner_params["consensus_threshold"]
     log:
-        os.path.join(output_dir_merge, "logs/fasta_cleaner/03_outlier_filter.log")
+        os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/03_outlier_filter.log")
     threads: rule_resources["statistical_outlier_filter_merge"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["statistical_outlier_filter_merge"]["mem_mb"] * attempt
@@ -1302,17 +1887,17 @@ if use_reference_filtering:
     # Version WITH reference filtering - MERGE MODE
     rule reference_filter_merge:
         input:
-            filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
+            filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
         output:
-            filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filtered.txt"),
-            metrics=os.path.join(output_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv")
+            filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filtered.txt"),
+            metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/04_reference_filter.py"),
-            output_dir=os.path.join(output_dir_merge, "fasta_cleaner/04_reference_filtered"),
+            output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/04_reference_filtered"),
             reference_dir=reference_dir,
             filter_mode=fasta_cleaner_params["reference_filter_mode"],
         log:
-            os.path.join(output_dir_merge, "logs/fasta_cleaner/04_reference_filter.log")
+            os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/04_reference_filter.log")
         threads: rule_resources["reference_filter_merge"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["reference_filter_merge"]["mem_mb"] * attempt
@@ -1334,21 +1919,53 @@ if use_reference_filtering:
                 2>&1 | tee {log}
             """
 
+    rule consensus_generation_merge:
+        input:
+            filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filtered.txt")
+        output:
+            concat_consensus=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
+        params:
+            script=os.path.join(workflow.basedir, "scripts/05_consensus_generator.py"),
+            output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/05_cleaned_consensus"),
+            consensus_threshold=fasta_cleaner_params["consensus_threshold"],
+            preprocessing_mode="merge"
+        log:
+            os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/05_consensus_generation.log")
+        threads: rule_resources["consensus_generation_merge"]["threads"]
+        resources:
+            mem_mb=lambda wildcards, attempt: rule_resources["consensus_generation_merge"]["mem_mb"] * attempt
+        retries: 2
+        shell:
+            """
+            set -euo pipefail
+
+            python {params.script} \\
+                --input-files-list {input.filtered_files} \\
+                --output-dir {params.output_dir} \\
+                --consensus-fasta {output.concat_consensus} \\
+                --consensus-metrics {output.consensus_metrics} \\
+                --consensus-threshold {params.consensus_threshold} \\
+                --preprocessing-mode {params.preprocessing_mode} \\
+                --threads {threads} \\
+                2>&1 | tee {log}
+            """
+
     rule aggregate_filter_metrics_merge:
         input:
-            human_metrics=os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
-            at_metrics=os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
-            outlier_metrics=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
-            reference_metrics=os.path.join(output_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv"),
-            consensus_metrics=os.path.join(output_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
+            human_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
+            at_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
+            outlier_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
+            reference_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
         output:
-            completion_flag=os.path.join(output_dir_merge, "logs/cleaning_complete.txt"),
-            combined_statistics=os.path.join(output_dir_merge, "fasta_cleaner/combined_statistics.csv")
+            completion_flag=os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner_complete.txt"),
+            combined_statistics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/combined_statistics.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/06_aggregate_filter_metrics.py"),
-            output_dir=os.path.join(output_dir_merge, "fasta_cleaner")
+            output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner")
         log:
-            os.path.join(output_dir_merge, "logs/fasta_cleaner/06_aggregate_metrics.log")
+            os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/06_aggregate_metrics.log")
         threads: rule_resources["aggregate_filter_metrics_merge"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["aggregate_filter_metrics_merge"]["mem_mb"] * attempt
@@ -1370,53 +1987,21 @@ if use_reference_filtering:
                 
             touch {output.completion_flag}
             """
-
-    rule consensus_generation_merge:
-        input:
-            filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/04_reference_filtered/reference_filtered.txt")
-        output:
-            concat_consensus=os.path.join(output_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
-            consensus_metrics=os.path.join(output_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
-        params:
-            script=os.path.join(workflow.basedir, "scripts/05_consensus_generator.py"),
-            output_dir=os.path.join(output_dir_merge, "fasta_cleaner/05_cleaned_consensus"),
-            consensus_threshold=fasta_cleaner_params["consensus_threshold"],
-            preprocessing_mode="merge"
-        log:
-            os.path.join(output_dir_merge, "logs/fasta_cleaner/05_consensus_generation.log")
-        threads: rule_resources["consensus_generation_merge"]["threads"]
-        resources:
-            mem_mb=lambda wildcards, attempt: rule_resources["consensus_generation_merge"]["mem_mb"] * attempt
-        retries: 2
-        shell:
-            """
-            set -euo pipefail
-
-            python {params.script} \\
-                --input-files-list {input.filtered_files} \\
-                --output-dir {params.output_dir} \\
-                --consensus-fasta {output.concat_consensus} \\
-                --consensus-metrics {output.consensus_metrics} \\
-                --consensus-threshold {params.consensus_threshold} \\
-                --preprocessing-mode {params.preprocessing_mode} \\
-                --threads {threads} \\
-                2>&1 | tee {log}
-            """
 else:
     # Version WITHOUT reference filtering
     rule consensus_generation_merge:
         input:
-            filtered_files=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
+            filtered_files=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
         output:
-            concat_consensus=os.path.join(output_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
-            consensus_metrics=os.path.join(output_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
+            concat_consensus=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/05_consensus_generator.py"),
-            output_dir=os.path.join(output_dir_merge, "fasta_cleaner/05_cleaned_consensus"),
+            output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/05_cleaned_consensus"),
             consensus_threshold=fasta_cleaner_params["consensus_threshold"],
             preprocessing_mode="merge"
         log:
-            os.path.join(output_dir_merge, "logs/fasta_cleaner/05_consensus_generation.log")
+            os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/05_consensus_generation.log")
         threads: rule_resources["consensus_generation_merge"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["consensus_generation_merge"]["mem_mb"] * attempt
@@ -1438,18 +2023,18 @@ else:
 
     rule aggregate_filter_metrics_merge:
         input:
-            human_metrics=os.path.join(output_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
-            at_metrics=os.path.join(output_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
-            outlier_metrics=os.path.join(output_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
-            consensus_metrics=os.path.join(output_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
+            human_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
+            at_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
+            outlier_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-merge.csv")
         output:
-            completion_flag=os.path.join(output_dir_merge, "logs/cleaning_complete.txt"),
-            combined_statistics=os.path.join(output_dir_merge, "fasta_cleaner/combined_statistics.csv")
+            completion_flag=os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner_complete.txt"),
+            combined_statistics=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/combined_statistics.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/06_aggregate_filter_metrics.py"),
-            output_dir=os.path.join(output_dir_merge, "fasta_cleaner")
+            output_dir=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner")
         log:
-            os.path.join(output_dir_merge, "logs/fasta_cleaner/06_aggregate_metrics.log")
+            os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/06_aggregate_metrics.log")
         threads: rule_resources["aggregate_filter_metrics_merge"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["aggregate_filter_metrics_merge"]["mem_mb"] * attempt
@@ -1470,21 +2055,22 @@ else:
                 
             touch {output.completion_flag}
             """
-
+			
+# ===== FASTA CLEANER RULES - CONCAT MODE =====
 
 # Sequential filtering rules (fasta_cleaner)
 rule human_cox1_filter_concat:
     input:
-        alignment_log=os.path.join(output_dir_concat, "logs/mge/alignment_files.log")
+        alignment_log=os.path.join(barcode_recovery_dir_concat, "logs/mge/alignment_files.log")
     output:
-        filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
-        metrics=os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv")
+        filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered/human_filtered.txt"),
+        metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/01_human_cox1_filter.py"),
-        output_dir=os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered"),
+        output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered"),
         human_threshold=fasta_cleaner_params["human_threshold"]
     log:
-        os.path.join(output_dir_concat, "logs/fasta_cleaner/01_human_filter.log")
+        os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/01_human_filter.log")
     threads: rule_resources["human_cox1_filter_concat"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["human_cox1_filter_concat"]["mem_mb"] * attempt
@@ -1507,18 +2093,18 @@ rule human_cox1_filter_concat:
 
 rule at_content_filter_concat:
     input:
-        human_filtered=os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered/human_filtered.txt")
+        human_filtered=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered/human_filtered.txt")
     output:
-        filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
-        summary_metrics=os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv")
+        filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered/at_filtered.txt"),
+        summary_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/02_at_content_filter.py"),
-        output_dir=os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered"),
+        output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered"),
         at_threshold=fasta_cleaner_params["at_difference"],
         at_mode=fasta_cleaner_params["at_mode"],
         consensus_threshold=fasta_cleaner_params["consensus_threshold"]
     log:
-        os.path.join(output_dir_concat, "logs/fasta_cleaner/02_at_filter.log")
+        os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/02_at_filter.log")
     threads: rule_resources["at_content_filter_concat"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["at_content_filter_concat"]["mem_mb"] * attempt
@@ -1542,18 +2128,18 @@ rule at_content_filter_concat:
 
 rule statistical_outlier_filter_concat:
     input:
-        filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered/at_filtered.txt")
+        filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered/at_filtered.txt")
     output:
-        filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
-        summary_metrics=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
-        individual_metrics=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv")
+        filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt"),
+        summary_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_summary_metrics.csv"),
+        individual_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/03_statistical_outlier_filter.py"),
-        output_dir=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered"),
+        output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered"),
         outlier_percentile=fasta_cleaner_params["outlier_percentile"],
         consensus_threshold=fasta_cleaner_params["consensus_threshold"]
     log:
-        os.path.join(output_dir_concat, "logs/fasta_cleaner/03_outlier_filter.log")
+        os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/03_outlier_filter.log")
     threads: rule_resources["statistical_outlier_filter_concat"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["statistical_outlier_filter_concat"]["mem_mb"] * attempt
@@ -1580,17 +2166,17 @@ if use_reference_filtering:
     # Version WITH reference filtering - CONCAT MODE  
     rule reference_filter_concat:
         input:
-            filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
+            filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
         output:
-            filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filtered.txt"),
-            metrics=os.path.join(output_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv")
+            filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filtered.txt"),
+            metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/04_reference_filter.py"),
-            output_dir=os.path.join(output_dir_concat, "fasta_cleaner/04_reference_filtered"),
+            output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/04_reference_filtered"),
             reference_dir=reference_dir,
             filter_mode=fasta_cleaner_params["reference_filter_mode"],
         log:
-            os.path.join(output_dir_concat, "logs/fasta_cleaner/04_reference_filter.log")
+            os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/04_reference_filter.log")
         threads: rule_resources["reference_filter_concat"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["reference_filter_concat"]["mem_mb"] * attempt
@@ -1614,17 +2200,17 @@ if use_reference_filtering:
 
     rule consensus_generation_concat:
         input:
-            filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filtered.txt")
+            filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filtered.txt")
         output:
-            concat_consensus=os.path.join(output_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
-            consensus_metrics=os.path.join(output_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
+            concat_consensus=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/05_consensus_generator.py"),
-            output_dir=os.path.join(output_dir_concat, "fasta_cleaner/05_cleaned_consensus"),
+            output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/05_cleaned_consensus"),
             consensus_threshold=fasta_cleaner_params["consensus_threshold"],
             preprocessing_mode="concat"
         log:
-            os.path.join(output_dir_concat, "logs/fasta_cleaner/05_consensus_generation.log")
+            os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/05_consensus_generation.log")
         threads: rule_resources["consensus_generation_concat"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["consensus_generation_concat"]["mem_mb"] * attempt
@@ -1646,19 +2232,19 @@ if use_reference_filtering:
 
     rule aggregate_filter_metrics_concat:
         input:
-            human_metrics=os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
-            at_metrics=os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
-            outlier_metrics=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
-            reference_metrics=os.path.join(output_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv"),
-            consensus_metrics=os.path.join(output_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
+            human_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
+            at_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
+            outlier_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
+            reference_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/04_reference_filtered/reference_filter_metrics.csv"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
         output:
-            completion_flag=os.path.join(output_dir_concat, "logs/cleaning_complete.txt"),
-            combined_statistics=os.path.join(output_dir_concat, "fasta_cleaner/combined_statistics.csv")
+            completion_flag=os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner_complete.txt"),
+            combined_statistics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/combined_statistics.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/06_aggregate_filter_metrics.py"),
-            output_dir=os.path.join(output_dir_concat, "fasta_cleaner")
+            output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner")
         log:
-            os.path.join(output_dir_concat, "logs/fasta_cleaner/06_aggregate_metrics.log")
+            os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/06_aggregate_metrics.log")
         threads: rule_resources["aggregate_filter_metrics_concat"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["aggregate_filter_metrics_concat"]["mem_mb"] * attempt
@@ -1685,17 +2271,17 @@ else:
     # Version WITHOUT reference filtering
     rule consensus_generation_concat:
         input:
-            filtered_files=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
+            filtered_files=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filtered.txt")
         output:
-            concat_consensus=os.path.join(output_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
-            consensus_metrics=os.path.join(output_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
+            concat_consensus=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/05_consensus_generator.py"),
-            output_dir=os.path.join(output_dir_concat, "fasta_cleaner/05_cleaned_consensus"),
+            output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/05_cleaned_consensus"),
             consensus_threshold=fasta_cleaner_params["consensus_threshold"],
             preprocessing_mode="concat"
         log:
-            os.path.join(output_dir_concat, "logs/fasta_cleaner/05_consensus_generation.log")
+            os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/05_consensus_generation.log")
         threads: rule_resources["consensus_generation_concat"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["consensus_generation_concat"]["mem_mb"] * attempt
@@ -1717,18 +2303,18 @@ else:
 
     rule aggregate_filter_metrics_concat:
         input:
-            human_metrics=os.path.join(output_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
-            at_metrics=os.path.join(output_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
-            outlier_metrics=os.path.join(output_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
-            consensus_metrics=os.path.join(output_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
+            human_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/01_human_filtered/human_filter_metrics.csv"),
+            at_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/02_at_filtered/at_filter_summary.csv"),
+            outlier_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/03_outlier_filtered/outlier_filter_individual_metrics.csv"),
+            consensus_metrics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/05_cleaned_consensus/cleaned_cons_metrics-concat.csv")
         output:
-            completion_flag=os.path.join(output_dir_concat, "logs/cleaning_complete.txt"),
-            combined_statistics=os.path.join(output_dir_concat, "fasta_cleaner/combined_statistics.csv")
+            completion_flag=os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner_complete.txt"),
+            combined_statistics=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/combined_statistics.csv")
         params:
             script=os.path.join(workflow.basedir, "scripts/06_aggregate_filter_metrics.py"),
-            output_dir=os.path.join(output_dir_concat, "fasta_cleaner")
+            output_dir=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner")
         log:
-            os.path.join(output_dir_concat, "logs/fasta_cleaner/06_aggregate_metrics.log")
+            os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/06_aggregate_metrics.log")
         threads: rule_resources["aggregate_filter_metrics_concat"]["threads"]
         resources:
             mem_mb=lambda wildcards, attempt: rule_resources["aggregate_filter_metrics_concat"]["mem_mb"] * attempt
@@ -1749,23 +2335,24 @@ else:
                 
             touch {output.completion_flag}
             """
-
+			
+# ===== CLEANUP AND CONSENSUS COMBINATION RULES =====
 
 # Clean up intermediate fasta files from filtering directories (remove intermediate FASTA files)
 rule remove_fasta_cleaner_files:
     input:
         # Wait for filtering to complete
-        merge_cleaning_complete=os.path.join(output_dir_merge, "logs/cleaning_complete.txt"),
-        concat_cleaning_complete=os.path.join(output_dir_concat, "logs/cleaning_complete.txt"),
+        merge_cleaning_complete=os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner_complete.txt"),
+        concat_cleaning_complete=os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner_complete.txt"),
         # Ensure final consensus sequences are created before cleanup
-        merge_consensus=os.path.join(output_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
-        concat_consensus=os.path.join(output_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta")
+        merge_consensus=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
+        concat_consensus=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta")
     output:
-        merge_cleanup_complete=os.path.join(output_dir_merge, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
-        concat_cleanup_complete=os.path.join(output_dir_concat, "logs/fasta_cleaner/fasta_cleaner_complete.txt")
+        merge_cleanup_complete=os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
+        concat_cleanup_complete=os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/fasta_cleaner_complete.txt")
     params:
-        merge_dir=output_dir_merge,
-        concat_dir=output_dir_concat,
+        merge_dir=barcode_recovery_dir_merge,
+        concat_dir=barcode_recovery_dir_concat,
         use_ref_filtering=str(use_reference_filtering)
     threads: rule_resources["remove_fasta_cleaner_files"]["threads"]
     resources:
@@ -1871,71 +2458,213 @@ rule remove_fasta_cleaner_files:
         concat_removed, concat_saved = cleanup_fasta_files(params.concat_dir, "concat", output.concat_cleanup_complete)
 
 
-# Run Fasta_compare script on MGE and fasta_cleaner concatenated consensus multi-FASTAs
-rule fasta_compare:
+rule cat_consensus_files:
     input:
-        fasta_concat=os.path.join(output_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
-        fasta_merge=os.path.join(output_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
-        clean_fasta_concat=os.path.join(output_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
-        clean_fasta_merge=os.path.join(output_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
-        stats_concat=os.path.join(output_dir_concat, "fasta_cleaner/combined_statistics.csv"),
-        stats_merge=os.path.join(output_dir_merge, "fasta_cleaner/combined_statistics.csv")
+        # Pre-cleaning consensus files
+        fasta_concat=os.path.join(barcode_recovery_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
+        fasta_merge=os.path.join(barcode_recovery_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
+        # Post-cleaning consensus files
+        merge_consensus=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
+        concat_consensus=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta")
     output:
-        csv=os.path.join(main_output_dir, f"fasta_compare/{run_name}_fasta_compare.csv"),
-        full_fasta=os.path.join(main_output_dir, f"fasta_compare/{run_name}_full_sequences.fasta"),
-        barcode_fasta=os.path.join(main_output_dir, f"fasta_compare/{run_name}_barcode_sequences.fasta")
-    params:
-        script=os.path.join(workflow.basedir, "scripts/fasta_compare.py"),
-        target_marker=fasta_compare_params["target"],
-        rank=fasta_compare_params.get("rank", 3),
-        relaxed=fasta_compare_params.get("relaxed", False),
-        verbosity=" ".join([
-            "--verbose" if fasta_compare_params["verbose"] else "",
-            "--relaxed" if fasta_compare_params.get("relaxed", False) else ""
-        ]).strip()
+        final_consensus=os.path.join(barcode_recovery_dir, f"{run_name}_all_cons_combined.fasta")
     log:
-        os.path.join(main_output_dir, f"fasta_compare/fasta_compare_{run_name}.log")
-    threads: rule_resources["fasta_compare"]["threads"]
+        os.path.join(barcode_recovery_dir, "logs/cat_consensus_files.log")
+    threads: rule_resources["cat_consensus_files"]["threads"]
     resources:
-        mem_mb=lambda wildcards, attempt: rule_resources["fasta_compare"]["mem_mb"] * attempt
-    retries: 3
+        mem_mb=lambda wildcards, attempt: rule_resources["cat_consensus_files"]["mem_mb"] * attempt
+    retries: 2
     shell:
         """
         set -euo pipefail
+		                
+        echo "Concatenating all (2-4) consensus multi-FASTA files for {run_name}" > {log}
+        echo "Started: $(date)" >> {log}
 
-        python {params.script} \
-            --output-csv {output.csv} \
-            --output-fasta {output.full_fasta} \
-            --output-barcode {output.barcode_fasta} \
-            --input {input.fasta_concat} {input.fasta_merge} {input.clean_fasta_concat} {input.clean_fasta_merge} \
-            --target {params.target_marker} \
-            --rank {params.rank} \
-            --log-file {log} \
-            {params.verbosity}
+        # Concatenation
+        cat {input.fasta_concat} {input.fasta_merge} {input.merge_consensus} {input.concat_consensus} > {output.final_consensus}
+
+        echo "Completed: $(date)" >> {log}
+        echo "Output file size: $(numfmt --to=iec $(stat -c%s {output.final_consensus}))" >> {log}
         """
+		
+# ===== VALIDATION RULES =====
 
+if run_structural_validation:
+    rule structural_validation:
+        input:
+            fasta_concat=os.path.join(barcode_recovery_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
+            fasta_merge=os.path.join(barcode_recovery_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
+            clean_fasta_concat=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
+            clean_fasta_merge=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
+            stats_concat=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/combined_statistics.csv"),
+            stats_merge=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/combined_statistics.csv"),
+            hmm_file=hmm_file_path
+        output:
+            csv=os.path.join(main_output_dir, f"04_barcode_validation/structural/structural_validation.csv"),
+            full_fasta=os.path.join(main_output_dir, f"04_barcode_validation/structural/{run_name}_full_sequences.fasta"),
+            barcode_fasta=os.path.join(main_output_dir, f"04_barcode_validation/structural/{run_name}_barcode_sequences.fasta")
+        params:
+            script=os.path.join(workflow.basedir, "scripts/structural_validation.py"),
+            target_marker=structural_validation_params["target"],
+            genetic_code=structural_validation_params.get("genetic_code", 1),  # Default to standard genetic code
+            verbosity=" ".join(["--verbose" if structural_validation_params["verbose"] else ""]).strip()
+        log:
+            os.path.join(main_output_dir, f"04_barcode_validation/structural/structural_validation-{run_name}.log")
+        threads: rule_resources["structural_validation"]["threads"]
+        resources:
+            mem_mb=lambda wildcards, attempt: rule_resources["structural_validation"]["mem_mb"] * attempt,
+            slurm_partition=rule_resources["structural_validation"]["partition"]
+        retries: 3
+        shell:
+            """
+            set -euo pipefail
+
+            # Ensure HMM file exists
+            if [ ! -f "{input.hmm_file}" ]; then
+                echo "ERROR: HMM file not found: {input.hmm_file}" >> {log}
+                echo "Please ensure the HMM file for target '{params.target_marker}' exists at the specified path." >> {log}
+                exit 1
+            fi
+
+            python {params.script} \
+                --output-csv {output.csv} \
+                --output-fasta {output.full_fasta} \
+                --output-barcode {output.barcode_fasta} \
+                --input {input.fasta_concat} {input.fasta_merge} {input.clean_fasta_concat} {input.clean_fasta_merge} \
+                --hmm {input.hmm_file} \
+                --code {params.genetic_code} \
+                --log-file {log} \
+                {params.verbosity}
+            """
+
+if run_taxonomic_validation:
+    rule local_blast:
+        input:
+            barcode_fasta=os.path.join(main_output_dir, f"04_barcode_validation/structural/{run_name}_barcode_sequences.fasta")
+        output:
+            csv=os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/01_local_blast_output.csv")
+        params:
+            script=os.path.join(workflow.basedir, "scripts/tv_local_blast.py"),
+            database=taxonomic_validation_params["database"],
+            verbosity="--verbose" if taxonomic_validation_params["verbose"] else "",
+            out_dir=os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/") 
+        log:
+            os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/01_local_blast-{run_name}.log")
+        threads: rule_resources["taxonomic_validation"]["threads"]
+        resources:
+            mem_mb=lambda wildcards, attempt: rule_resources["taxonomic_validation"]["mem_mb"] * attempt,
+            slurm_partition=rule_resources["taxonomic_validation"]["partition"]
+        retries: 3
+        shell:
+            """
+            set -euo pipefail
+            
+            # Create output directory
+            mkdir -p {params.out_dir}
+            
+            # Check if database exists
+            if [ ! -e "{params.database}" ]; then
+                echo "ERROR: Database not found: {params.database}" >> {log}
+                echo "Please ensure the database path exists and contains BLAST database files or a FASTA file." >> {log}
+                exit 1
+            fi
+
+            echo "Starting taxonomic validation: $(date)" > {log}
+            echo "Input FASTA: {input.barcode_fasta}" >> {log}
+            echo "Database: {params.database}" >> {log}
+            echo "Output directory: {params.out_dir}" >> {log}
+            echo "Threads: {threads}" >> {log}
+            echo "Verbose: {params.verbosity}" >> {log}
+
+            python {params.script} \\
+                --input {input.barcode_fasta} \\
+                --database {params.database} \\
+                --output {params.out_dir} \\
+                --output-csv {output.csv} \\
+                --processes {threads} \\
+                {params.verbosity} \\
+                >> {log} 2>&1
+
+            echo "Taxonomic validation completed: $(date)" >> {log}
+            """
+
+if run_taxonomic_validation:
+    rule blast2taxonomy:
+        input:
+            blast_csv=os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/01_local_blast_output.csv"),
+            bold_taxonomy=taxonomic_validation_params["bold_database_taxonomy"],
+            expected_taxonomy=taxonomic_validation_params["expected_taxonomy"],
+            input_fasta=os.path.join(main_output_dir, f"04_barcode_validation/structural/{run_name}_barcode_sequences.fasta")
+        output:
+            taxonomy_csv=os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/02_taxonomic_validation.csv"),
+            barcode_fasta=os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/{run_name}_barcode_sequences.fasta"),
+            final_fasta=os.path.join(main_output_dir, f"{run_name}_final_validated_barcodes.fasta")
+        params:
+            script=os.path.join(workflow.basedir, "scripts/tv_blast2taxonomy.py"),
+            taxval_rank=taxonomic_validation_params.get("taxval_rank", "family"),
+            min_pident=taxonomic_validation_params.get("min_pident", "80")
+        log:
+            os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/02_blast2taxonomy-{run_name}.log")
+        threads: rule_resources["blast2taxonomy"]["threads"]
+        resources:
+            mem_mb=lambda wildcards, attempt: rule_resources["blast2taxonomy"]["mem_mb"] * attempt
+        retries: 3
+        shell:
+            """
+            set -euo pipefail
+
+            echo "Starting taxonomy validation analysis: $(date)" > {log}
+            echo "BLAST CSV: {input.blast_csv}" >> {log}
+            echo "BOLD taxonomy: {input.bold_taxonomy}" >> {log}
+            echo "Expected taxonomy: {input.expected_taxonomy}" >> {log}
+            echo "Input FASTA: {input.input_fasta}" >> {log}
+            echo "Validation rank: {params.taxval_rank}" >> {log}
+            echo "Output CSV: {output.taxonomy_csv}" >> {log}
+            echo "Output FASTA: {output.barcode_fasta}" >> {log}
+
+            python {params.script} \\
+                --taxval-rank {params.taxval_rank} \\
+                --input-blast {input.blast_csv} \\
+                --input-bold {input.bold_taxonomy} \\
+                --input-taxonomy {input.expected_taxonomy} \\
+                --input-fasta {input.input_fasta} \\
+                --output-csv {output.taxonomy_csv} \\
+                --output-fasta {output.barcode_fasta} \\
+                --min-pident {params.min_pident} \\
+                --log {log} \\
+                >> {log} 2>&1
+
+
+            # Copy and rename the barcode_fasta to another directory
+            cp {output.barcode_fasta} {output.final_fasta}
+
+            echo "Taxonomy validation analysis completed: $(date)" >> {log}
+            """
+			
+# ===== STATISTICS AND FINAL RULES =====
 
 # Extract, aggregate and calculate stats from inputs for merge mode
 rule extract_stats_to_csv_merge:
     input:
-        alignment_log=os.path.join(output_dir_merge, "logs/mge/alignment_files.log"),
+        alignment_log=os.path.join(barcode_recovery_dir_merge, "logs/mge/alignment_files.log"),
         out_files=expand(
-            os.path.join(output_dir_merge, "out/{sample}_r_{r}_s_{s}_summary.out"),
+            os.path.join(barcode_recovery_dir_merge, "out/{sample}_r_{r}_s_{s}_summary.out"),
             sample=list(samples.keys()),
             r=config["r"],
             s=config["s"]
         ),
-        pre_fasta=os.path.join(output_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
-        cleaning_csv=os.path.join(output_dir_merge, "fasta_cleaner/combined_statistics.csv"),
-        cleaner_complete=os.path.join(output_dir_merge, "logs/cleaning_complete.txt"),
-        post_fasta=os.path.join(output_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
+        pre_fasta=os.path.join(barcode_recovery_dir_merge, f"consensus/{run_name}_cons_combined-merge.fasta"),
+        cleaning_csv=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/combined_statistics.csv"),
+        cleaner_complete=os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner_complete.txt"),
+        post_fasta=os.path.join(barcode_recovery_dir_merge, "fasta_cleaner/cleaned_cons_combined.fasta"),
         ref_seqs=os.path.join(main_output_dir, "references/sequence_references.csv") if run_gene_fetch else []
     output:
-        stats=os.path.join(output_dir_merge, f"{run_name}_merge-stats.csv")
+        stats=os.path.join(barcode_recovery_dir_merge, f"{run_name}_merge-stats.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/mge_stats.py"),
-        out_dir=os.path.join(output_dir_merge, "out/"),
-        log_dir=os.path.join(output_dir_merge, "logs/mge"),
+        out_dir=os.path.join(barcode_recovery_dir_merge, "out/"),
+        log_dir=os.path.join(barcode_recovery_dir_merge, "logs/mge"),
         ref_seqs_arg=lambda wildcards, input: f"--ref_seqs {input.ref_seqs}" if run_gene_fetch else ""
     threads: rule_resources["extract_stats_to_csv_merge"]["threads"]
     resources:
@@ -1952,24 +2681,24 @@ rule extract_stats_to_csv_merge:
 
 rule extract_stats_to_csv_concat:
     input:
-        alignment_log=os.path.join(output_dir_concat, "logs/mge/alignment_files.log"),
+        alignment_log=os.path.join(barcode_recovery_dir_concat, "logs/mge/alignment_files.log"),
         out_files=expand(
-            os.path.join(output_dir_concat, "out/{sample}_r_{r}_s_{s}_summary.out"),
+            os.path.join(barcode_recovery_dir_concat, "out/{sample}_r_{r}_s_{s}_summary.out"),
             sample=list(samples.keys()),
             r=config["r"],
             s=config["s"]
         ),
-        pre_fasta=os.path.join(output_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
-        cleaning_csv=os.path.join(output_dir_concat, "fasta_cleaner/combined_statistics.csv"),
-        cleaner_complete=os.path.join(output_dir_concat, "logs/cleaning_complete.txt"),
-        post_fasta=os.path.join(output_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
+        pre_fasta=os.path.join(barcode_recovery_dir_concat, f"consensus/{run_name}_cons_combined-concat.fasta"),
+        cleaning_csv=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/combined_statistics.csv"),
+        cleaner_complete=os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner_complete.txt"),
+        post_fasta=os.path.join(barcode_recovery_dir_concat, "fasta_cleaner/cleaned_cons_combined.fasta"),
         ref_seqs=os.path.join(main_output_dir, "references/sequence_references.csv") if run_gene_fetch else []
     output:
-        stats=os.path.join(output_dir_concat, f"{run_name}_cons_combined-concat-stats.csv")
+        stats=os.path.join(barcode_recovery_dir_concat, f"{run_name}_concat-stats.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/mge_stats.py"),
-        out_dir=os.path.join(output_dir_concat, "out/"),
-        log_dir=os.path.join(output_dir_concat, "logs/mge"),
+        out_dir=os.path.join(barcode_recovery_dir_concat, "out/"),
+        log_dir=os.path.join(barcode_recovery_dir_concat, "logs/mge"),
         ref_seqs_arg=lambda wildcards, input: f"--ref_seqs {input.ref_seqs}" if run_gene_fetch else ""
     threads: rule_resources["extract_stats_to_csv_concat"]["threads"]
     resources:
@@ -1984,14 +2713,13 @@ rule extract_stats_to_csv_concat:
         mv mge_stats.log {params.log_dir}/
         """
 
-
 # Concatenate merge and concat stats CSV files with column alignment
 rule combine_stats_files:
     input:
-        merge_stats=os.path.join(output_dir_merge, f"{run_name}_merge-stats.csv"),
-        concat_stats=os.path.join(output_dir_concat, f"{run_name}_cons_combined-concat-stats.csv")
+        merge_stats=os.path.join(barcode_recovery_dir_merge, f"{run_name}_merge-stats.csv"),
+        concat_stats=os.path.join(barcode_recovery_dir_concat, f"{run_name}_concat-stats.csv")
     output:
-        combined_stats=os.path.join(main_output_dir, f"{run_name}_combined_stats.csv")
+        combined_stats=os.path.join(barcode_recovery_dir, f"{run_name}_bgee_stats.csv")
     params:
         script=os.path.join(workflow.basedir, "scripts/csv_combiner_mge.py")
     threads: rule_resources["combine_stats_files"]["threads"]
@@ -2007,25 +2735,48 @@ rule combine_stats_files:
             --output {output.combined_stats}
         """	
 
+rule val_bgee_stats_merge:
+    input:
+        structval=os.path.join(main_output_dir, f"04_barcode_validation/structural/structural_validation.csv"),
+        taxval=os.path.join(main_output_dir, f"04_barcode_validation/taxonomic/02_taxonomic_validation.csv"),
+        bgee=os.path.join(barcode_recovery_dir, f"{run_name}_bgee_stats.csv")
+    output:
+        final_stats=os.path.join(main_output_dir, f"{run_name}_final_stats.csv")
+    params:
+        script=os.path.join(workflow.basedir, "scripts/val_csv_merger.py")
+    threads: rule_resources["val_bgee_stats_merge"]["threads"]
+    resources:
+        mem_mb=lambda wildcards, attempt: rule_resources["val_bgee_stats_merge"]["mem_mb"] * attempt
+    retries: 3
+    shell:
+        """
+        set -euo pipefail
+
+        python {params.script} \
+            --input-structval {input.structval} \
+            --input-taxval {input.taxval} \
+            --input-bgee-csv {input.bgee} \
+            --output {output.final_stats}
+        """	
 
 # Final clean up superfluous files
 rule cleanup_files:
     input:
         # Merge mode inputs
-        merge_summary_csv=os.path.join(output_dir_merge, f"{run_name}_merge-stats.csv"),
-        clean_headers_log=os.path.join(output_dir_merge, "logs/clean_headers.log"),
-        merge_exon_remove=os.path.join(output_dir_merge, "logs/exonerate_cleanup_complete.txt"),
+        merge_summary_csv=os.path.join(barcode_recovery_dir_merge, f"{run_name}_merge-stats.csv"),
+        clean_headers_log=os.path.join(preprocessing_dir_merge, "logs/clean_headers/clean_headers.log"),
+        merge_exon_remove=os.path.join(barcode_recovery_dir_merge, "logs/exonerate_int_cleanup_complete.txt"),
         # Concat mode inputs
-        concat_summary_csv=os.path.join(output_dir_concat, f"{run_name}_cons_combined-concat-stats.csv"),
-        concat_logs=os.path.join(output_dir_concat, "logs/concat_reads.log"),
-        trim_galore_logs=os.path.join(output_dir_concat, "logs/trim_galore.log"),
-        concat_exon_remove=os.path.join(output_dir_concat, "logs/exonerate_cleanup_complete.txt"),
+        concat_summary_csv=os.path.join(barcode_recovery_dir_concat, f"{run_name}_concat-stats.csv"),
+        concat_logs=os.path.join(preprocessing_dir_concat, "logs/concat/concat_reads.log"),
+        trim_galore_logs=os.path.join(preprocessing_dir_concat, "logs/trim_galore/trim_galore.log"),
+        concat_exon_remove=os.path.join(barcode_recovery_dir_concat, "logs/exonerate_int_cleanup_complete.txt"),
         # Wait for fasta cleanup to complete
-        merge_fasta_cleanup=os.path.join(output_dir_merge, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
-        concat_fasta_cleanup=os.path.join(output_dir_concat, "logs/fasta_cleaner/fasta_cleaner_complete.txt")
+        merge_fasta_cleanup=os.path.join(barcode_recovery_dir_merge, "logs/fasta_cleaner/fasta_cleaner_complete.txt"),
+        concat_fasta_cleanup=os.path.join(barcode_recovery_dir_concat, "logs/fasta_cleaner/fasta_cleaner_complete.txt")
     output:
-        merge_complete=touch(os.path.join(output_dir_merge, "logs/file_cleanup_complete.txt")),
-        concat_complete=touch(os.path.join(output_dir_concat, "logs/file_cleanup_complete.txt"))
+        merge_complete=touch(os.path.join(preprocessing_dir_merge, "logs/final_cleanup_complete.txt")),
+        concat_complete=touch(os.path.join(preprocessing_dir_concat, "logs/final_cleanup_complete.txt"))
     threads: rule_resources["cleanup_files"]["threads"]
     resources:
         mem_mb=lambda wildcards, attempt: rule_resources["cleanup_files"]["mem_mb"] * attempt
@@ -2064,43 +2815,13 @@ rule cleanup_files:
                 print(f"[{mode_name}] MGE log directory not found: {mge_log_dir}")
             
             # Remove rename_complete.txt - both modes
-            rename_complete_file = os.path.join(mode_dir, "logs/rename_complete.txt")
+            rename_complete_file = os.path.join(mode_dir, "logs/rename_consensus/rename_complete.txt")
             if os.path.exists(rename_complete_file):
                 print(f"[{mode_name}] Removing rename_complete.txt file: {rename_complete_file}")
                 os.remove(rename_complete_file)
                 removed_files += 1
             else:
                 print(f"[{mode_name}] rename_complete.txt file not found: {rename_complete_file}")
-            
-            # Mode-specific cleanup
-            if mode_name == "merge":
-                # Remove aggregate_clean_headers.out file
-                aggregate_clean_headers_out = os.path.join(mode_dir, "logs/aggregate_clean_headers.out")
-                if os.path.exists(aggregate_clean_headers_out):
-                    print(f"[{mode_name}] Removing aggregate_clean_headers.out file: {aggregate_clean_headers_out}")
-                    os.remove(aggregate_clean_headers_out)
-                    removed_files += 1
-                else:
-                    print(f"[{mode_name}] aggregate_clean_headers.out file not found: {aggregate_clean_headers_out}")
-            
-            elif mode_name == "concat":
-                # Remove aggregate_concat.out file
-                aggregate_concat_out = os.path.join(mode_dir, "logs/aggregate_concat.out")
-                if os.path.exists(aggregate_concat_out):
-                    print(f"[{mode_name}] Removing aggregate_concat.out file: {aggregate_concat_out}")
-                    os.remove(aggregate_concat_out)
-                    removed_files += 1
-                else:
-                    print(f"[{mode_name}] aggregate_concat.out file not found: {aggregate_concat_out}")
-                
-                # Remove aggregate_trim_galore.out file
-                aggregate_trim_galore_out = os.path.join(mode_dir, "logs/aggregate_trim_galore.out")
-                if os.path.exists(aggregate_trim_galore_out):
-                    print(f"[{mode_name}] Removing aggregate_trim_galore.out file: {aggregate_trim_galore_out}")
-                    os.remove(aggregate_trim_galore_out)
-                    removed_files += 1
-                else:
-                    print(f"[{mode_name}] aggregate_trim_galore.out file not found: {aggregate_trim_galore_out}")
             
             # Return cleanup statistics
             return {
@@ -2109,11 +2830,11 @@ rule cleanup_files:
                 "cleaned_dirs": cleaned_dirs
             }
         
-        # Cleanup for merge mode
-        merge_stats = cleanup_mode_files(output_dir_merge, "merge")
+        # Cleanup for merge mode (using barcode_recovery_dir for MGE logs)
+        merge_stats = cleanup_mode_files(barcode_recovery_dir_merge, "merge")
         
-        # Cleanup for concat mode
-        concat_stats = cleanup_mode_files(output_dir_concat, "concat")
+        # Cleanup for concat mode (using barcode_recovery_dir for MGE logs)
+        concat_stats = cleanup_mode_files(barcode_recovery_dir_concat, "concat")
         
         # Write completion message and cleanup info to merge output file
         with open(output.merge_complete, 'w') as f:

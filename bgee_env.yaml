@@ -7,17 +7,20 @@ dependencies:
   - exonerate=2.4.0
   - mamba=1.5.8
   - python=3.11.11
-  - snakemake=9.5.1
-  - snakemake-executor-plugin-slurm=1.4.0
+  - snakemake=9.9.0
+  - snakemake-executor-plugin-slurm=1.6.1
   - snakemake-executor-plugin-slurm-jobstep=0.3.0
-  - gene-fetch=1.0.15
+  - gene-fetch>=1.0.14
   - trim-galore=0.6.10
   - fastp=0.23.4
-  - samtools=1.22
-  - bwa=0.7.19
   - pigz=2.8
   - pandas=2.2.2
+  - bwa=0.7.19
+  - samtools=1.22
+  - numpy=1.26.4
+  - hmmer=3.4
   - bbmap=39.01
+  - blast=2.17.0
   - parallel=20240922
   - pip=24.2
   - pip:

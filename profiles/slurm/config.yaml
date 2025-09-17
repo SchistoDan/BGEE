@@ -5,11 +5,11 @@ executor: slurm
 default-resources:
   - slurm_partition=medium
   - slurm_extra="--ntasks=1 --signal=USR2@90 --no-requeue"
-    # --ntasks=1: Run one instance of the workflow.
-    # --signal=USR2@90: Sets up a signal to be sent to the job when it approaches its time limit.
-    # --no-requeue: Prevents the job from being automatically requeued if it fails (clashes with snakemake retry memory scaling).
+    # --no-requeue: Prevents the job from being automatically requeued if it fails (clashes with snakemake retry memory scaling)
+    # --signal=USR2@90: Sets up a signal to be sent to the job when it approaches its time limit
   
-jobs: 10                          # Maximum number of concurrent jobs run on cluster. # Remember not to exceed any thread limits. E.g. 20 concurrent jobs × 16 threads per job = up to 320 threads!
-latency-wait: 60                  # Wait 60 seconds before checking job status
-local-cores: 0                    # Prevents fallback to local execution upon job failure
-max-jobs-per-second: 1            # Controls rate Snakemake submits jobs to SLURM. Prevents overwhelming scheduler  
+jobs: 8                              # Maximum number of concurrent jobs run on cluster.
+latency-wait: 90                     # Wait N seconds before checking job status
+local-cores: 2                       # Core(s) internal snakemake operations.
+max-jobs-per-second: 1               # Controls rate Snakemake submits jobs to SLURM. Prevents overwhelming scheduler  
+max-status-checks-per-second: 0.05   # Controls how often Snakemake polls SLURM to check the status of submitted jobs.
